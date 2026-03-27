@@ -1,0 +1,45 @@
+# ── FloodGate Metadata Service — Docker build context exclusions ───────────────
+
+# Python byte-code and caches
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Build / dist artefacts
+*.egg-info/
+dist/
+build/
+*.whl
+
+# Local env / secrets (never enter build context)
+.env
+.env.*
+!.env.example
+
+# Test suite (not needed at runtime)
+tests/
+test_*.py
+*_test.py
+
+# Editor / OS noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.log
+
+# Git
+.git/
+.gitignore
+
+# Documentation
+*.md
+docs/
+
+# SQLite dev database (if created locally)
+*.db
+*.sqlite

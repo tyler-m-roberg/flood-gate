@@ -1,0 +1,35 @@
+# ── FloodGate UI — Docker build context exclusions ────────────────────────────
+
+# Node artefacts (never send to daemon; Dockerfile runs npm ci from scratch)
+node_modules/
+dist/
+.npm/
+
+# Git history and CI config
+.git/
+.gitignore
+.github/
+
+# Documentation
+*.md
+docs/
+
+# Local env files (secrets must not enter build context)
+.env
+.env.*
+!.env.example
+
+# Screenshots, test artefacts
+screenshots/
+coverage/
+.nyc_output/
+
+# Editor / OS noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.log
+
+# Backend services — not part of the frontend build context
+services/

@@ -1,0 +1,185 @@
+# ── FloodGate — local development / Docker Desktop compose ────────────────────
+#
+# Services
+# ────────
+#   ui            React SPA served by nginx-unprivileged → http://localhost:3000
+#   metadata-api  FastAPI metadata service               → http://localhost:8001
+#   keycloak      Keycloak dev instance                  → http://localhost:8080
+#
+# Quick start
+# ───────────
+#   docker compose up --build
+#
+# First-time Keycloak setup (one-off, after `docker compose up`)
+# ──────────────────────────────────────────────────────────────
+#   1. Open http://localhost:8080  → Admin Console (admin / admin)
+#   2. Create realm:  floodgate
+#   3. Create client: floodgate-metadata  (type: Bearer-only or Confidential)
+#   4. Create a test user and assign roles: analyst, viewer, or admin
+#   5. Obtain a token: POST http://localhost:8080/realms/floodgate/protocol/openid-connect/token
+#      (grant_type=password, client_id=floodgate-metadata, username=..., password=...)
+#   6. Call GET http://localhost:8001/api/v1/tests  with  Authorization: Bearer <token>
+#
+# The nginx proxy at /api/* forwards to metadata-api automatically, so the UI
+# can call /api/v1/* without CORS issues.
+#
+# To skip Keycloak entirely (prototype / mock data only), set:
+#   JWT_VERIFY_AUDIENCE=false
+# and issue any syntactically-valid JWT (the JWKS fetch will still happen on the
+# first authenticated request — point KEYCLOAK_URL at the running instance above).
+#
+# Volumes
+# ───────
+#   keycloak-data   Persists Keycloak realm/user config across restarts.
+#                   Remove with: docker compose down -v
+
+services:
+
+  # ── React SPA ───────────────────────────────────────────────────────────────
+  ui:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: floodgate-ui:local
+    ports:
+      - "3000:8080"
+    networks:
+      - floodgate-net
+    depends_on:
+      metadata-api:
+        condition: service_healthy
+    # Hardening
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      # nginx-unprivileged writes pid and temp files to /tmp
+      - /tmp:mode=1777
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO", "/dev/null", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 64M
+        reservations:
+          memory: 32M
+
+  # ── FastAPI metadata service ─────────────────────────────────────────────────
+  metadata-api:
+    build:
+      context: services/metadata-service
+      dockerfile: Dockerfile
+    image: floodgate-metadata:local
+    ports:
+      # Exposed for direct API testing (curl / Swagger UI at :8001/docs).
+      # Remove this port mapping in production; route all traffic through the
+      # nginx proxy instead.
+      - "8001:8001"
+    networks:
+      - floodgate-net
+    environment:
+      ENVIRONMENT: development
+      LOG_LEVEL: INFO
+      USE_MOCK_DATA: "true"
+      # Keycloak — matches the dev Keycloak service below
+      KEYCLOAK_URL: http://keycloak:8080
+      KEYCLOAK_REALM: floodgate
+      KEYCLOAK_CLIENT_ID: floodgate-metadata
+      # Allow the nginx proxy origin and direct dev access
+      CORS_ORIGINS: "http://localhost:3000,http://localhost:5173"
+      # Set to false if you want to skip audience validation during initial setup
+      JWT_VERIFY_AUDIENCE: "true"
+      # BFF session-cookie auth (used when nginx proxy plants the token in a cookie)
+      COOKIE_AUTH_ENABLED: "true"
+      UVICORN_WORKERS: "1"
+    depends_on:
+      keycloak:
+        condition: service_healthy
+    # Hardening
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      # Python / uvicorn may write temp files; also needed for in-memory SQLite
+      - /tmp:mode=1777
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - "CMD"
+        - "python"
+        - "-c"
+        - "import urllib.request; urllib.request.urlopen('http://localhost:8001/health').read()"
+      interval: 30s
+      timeout: 10s
+      start_period: 20s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: "1.00"
+          memory: 256M
+        reservations:
+          memory: 128M
+
+  # ── Keycloak (dev mode) ──────────────────────────────────────────────────────
+  # Single-node dev instance — NOT suitable for production.
+  # start-dev disables TLS and clustering; persists data via a named volume.
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.2
+    command: start-dev
+    ports:
+      - "8080:8080"
+    networks:
+      - floodgate-net
+    environment:
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: admin
+      # Store data in H2 backed by the named volume (upgrade to Postgres for staging)
+      KC_DB: dev-file
+      KC_HEALTH_ENABLED: "true"
+      KC_HTTP_PORT: "8080"
+    volumes:
+      - keycloak-data:/opt/keycloak/data
+    restart: unless-stopped
+    healthcheck:
+      # Keycloak 23+ exposes /health/ready on the management port (9000) or the
+      # same HTTP port when KC_HEALTH_ENABLED=true.
+      test:
+        - "CMD-SHELL"
+        - >
+          exec 3<>/dev/tcp/localhost/8080 &&
+          echo -e 'GET /health/ready HTTP/1.0\r\nHost: localhost\r\n\r\n' >&3 &&
+          grep -q '\"status\":\"UP\"' <&3
+      interval: 30s
+      timeout: 10s
+      start_period: 60s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: "1.00"
+          memory: 512M
+        reservations:
+          memory: 256M
+
+# ── Networks ──────────────────────────────────────────────────────────────────
+networks:
+  floodgate-net:
+    driver: bridge
+    # Restrict inter-container communication to named services only
+    internal: false  # must be false so keycloak healthcheck TCP works
+
+# ── Volumes ───────────────────────────────────────────────────────────────────
+volumes:
+  keycloak-data:
+    driver: local
