@@ -100,6 +100,11 @@ const CHANNELS_BY_TEST: Record<string, ChannelMeta[]> = {
   'TEST-2025-002': WELD_CHANNELS,
 }
 
+// ── Waveform sample count — must match scripts/load_mock_waveforms/main.py ─────
+// Fixed at 2048 so event metadata is deterministic and consistent with the
+// objects uploaded to MinIO by the mock data loader.
+export const N_SAMPLES = 2048
+
 // ── Mock Events ────────────────────────────────────────────────────────────────
 function makeEvents(testId: string, count: number): TestEvent[] {
   const baseDate = new Date('2024-11-15T10:00:00Z')
@@ -115,7 +120,8 @@ function makeEvents(testId: string, count: number): TestEvent[] {
   return Array.from({ length: count }, (_, i) => {
     const ts = new Date(baseDate.getTime() + i * 3_600_000 * 2)
     const sampleRate = [400_000, 500_000, 1_000_000][i % 3]
-    const duration = 0.5 + Math.random() * 1.5
+    // Fixed sample count → deterministic duration, consistent with MinIO objects.
+    const duration = N_SAMPLES / sampleRate
     return {
       id: `EVT-${String(i + 1).padStart(3, '0')}`,
       testId,
@@ -124,9 +130,9 @@ function makeEvents(testId: string, count: number): TestEvent[] {
       timestamp: ts.toISOString(),
       duration,
       sampleRate,
-      sampleCount: Math.round(sampleRate * duration),
+      sampleCount: N_SAMPLES,
       channels,
-      status: i < count - 1 ? 'complete' : ('complete' as const),
+      status: 'complete' as const,
       triggerCondition: i % 3 === 0 ? 'threshold > 2.5 V' : i % 3 === 1 ? 'manual' : 'AE rate > 100 hits/s',
     }
   })

@@ -7,6 +7,7 @@ import type {
 import {
   MOCK_EVENTS, generateChannelData, computeStats, CHANNELS_BY_TEST,
 } from '@/data/mockData'
+import { fetchWaveform, buildTimeAxis } from '@/api/waveformClient'
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 function channelKey(eventId: string, channelId: string) {
@@ -27,6 +28,7 @@ interface WorkspaceState {
 
   // Loaded events (data in memory)
   loadedEvents: LoadedEvent[]
+  loadingEvents: Set<string>
   loadEvent(testId: string, eventId: string): void
   unloadEvent(eventId: string): void
   isEventLoaded(eventId: string): boolean
@@ -71,9 +73,11 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
 
   // ── Events ──────────────────────────────────────────────────────────────────
   loadedEvents: [],
+  loadingEvents: new Set(),
 
   loadEvent(testId, eventId) {
-    if (get().isEventLoaded(eventId)) return
+    const state = get()
+    if (state.isEventLoaded(eventId) || state.loadingEvents.has(eventId)) return
 
     const events = MOCK_EVENTS[testId] ?? []
     const eventMeta = events.find(e => e.id === eventId)
@@ -81,31 +85,51 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
 
     const channels = CHANNELS_BY_TEST[testId] ?? []
     const eventIndex = events.findIndex(e => e.id === eventId)
-    const channelDataMap = new Map(
-      channels.map(ch => [
-        ch.id,
-        generateChannelData(ch, eventMeta, eventIndex),
-      ])
-    )
 
-    const loaded: LoadedEvent = {
-      testId, eventId, meta: eventMeta, channels: channelDataMap,
-    }
+    // Mark loading immediately so callers can show a spinner
+    set(s => ({ loadingEvents: new Set([...s.loadingEvents, eventId]) }))
 
-    // Precompute stats
-    const newStats = new Map(get().statsCache)
-    channels.forEach(ch => {
-      const data = channelDataMap.get(ch.id)
-      if (data) {
-        const key = channelKey(eventId, ch.id)
-        newStats.set(key, computeStats(data, ch, eventId))
-      }
-    })
+    void (async () => {
+      // Fetch all channels in parallel; fall back to local generation on error
+      const results = await Promise.allSettled(
+        channels.map(ch => fetchWaveform(testId, eventId, ch.id))
+      )
 
-    set(s => ({
-      loadedEvents: [...s.loadedEvents, loaded],
-      statsCache: newStats,
-    }))
+      const channelDataMap = new Map(
+        channels.map((ch, idx) => {
+          const result = results[idx]
+          if (result.status === 'fulfilled') {
+            const r = result.value
+            return [ch.id, {
+              channelId: ch.id,
+              eventId,
+              testId,
+              times: buildTimeAxis(r.n_samples, r.sample_rate, r.start_time),
+              values: Float64Array.from(r.values),
+              sampleRate: r.sample_rate,
+            }]
+          }
+          // API unavailable or 401 — generate locally so the UI still works
+          return [ch.id, generateChannelData(ch, eventMeta, eventIndex)]
+        })
+      )
+
+      const newStats = new Map(get().statsCache)
+      channels.forEach(ch => {
+        const data = channelDataMap.get(ch.id)
+        if (data) newStats.set(channelKey(eventId, ch.id), computeStats(data, ch, eventId))
+      })
+
+      set(s => {
+        const loadingEvents = new Set(s.loadingEvents)
+        loadingEvents.delete(eventId)
+        return {
+          loadedEvents: [...s.loadedEvents, { testId, eventId, meta: eventMeta, channels: channelDataMap }],
+          statsCache: newStats,
+          loadingEvents,
+        }
+      })
+    })()
   },
 
   unloadEvent(eventId) {
@@ -162,7 +186,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   },
 
   // ── Stats ─────────────────────────────────────────────────────────────────────
-  statsCache: new Map(),
+  statsCache: new Map<string, ChannelStats>(),
 
   getStats(key) {
     return get().statsCache.get(key) ?? null
