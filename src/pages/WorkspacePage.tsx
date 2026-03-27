@@ -10,6 +10,7 @@ export function WorkspacePage() {
   const { testId } = useParams<{ testId: string }>()
   const navigate = useNavigate()
   const loadedEvents = useWorkspaceStore(s => s.loadedEvents)
+  const loadingEvents = useWorkspaceStore(s => s.loadingEvents)
   const setActiveTestId = useWorkspaceStore(s => s.setActiveTestId)
 
   const containerRef = useRef<HTMLDivElement>(null)
@@ -49,8 +50,15 @@ export function WorkspacePage() {
 
       {/* Main dashboard area */}
       <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
-        {loadedEvents.length === 0 ? (
+        {loadedEvents.length === 0 && loadingEvents.size === 0 ? (
           <NoEventsPrompt testId={testId} hasEvents={hasEvents} onNavigate={() => navigate(testId ? `/test/${testId}` : '/')} />
+        ) : loadedEvents.length === 0 && loadingEvents.size > 0 ? (
+          <div className="flex flex-col items-center justify-center h-full gap-3 text-[#6e7681]">
+            <div className="w-6 h-6 border-2 border-[#58a6ff] border-t-transparent rounded-full animate-spin" />
+            <p className="text-sm text-[#8b949e]">
+              Loading {loadingEvents.size} event{loadingEvents.size > 1 ? 's' : ''} from waveform service…
+            </p>
+          </div>
         ) : (
           <div ref={containerRef} className="flex-1 min-h-0">
             {dims.w > 10 && dims.h > 10 && (

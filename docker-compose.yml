@@ -2,36 +2,48 @@
 #
 # Services
 # ────────
-#   ui            React SPA served by nginx-unprivileged → http://localhost:3000
-#   metadata-api  FastAPI metadata service               → http://localhost:8001
-#   keycloak      Keycloak dev instance                  → http://localhost:8080
+#   ui                React SPA (nginx)            → http://localhost:3000
+#   metadata-api      FastAPI metadata service      → http://localhost:8001
+#   waveform-api      Go waveform service           → http://localhost:8002
+#   minio             MinIO object storage          → http://localhost:9000 (API)
+#                                                      http://localhost:9001 (console)
+#   mock-data-loader  One-shot MinIO seeder         → exits after first run
+#   keycloak          Keycloak OIDC dev instance    → http://localhost:8080
 #
 # Quick start
 # ───────────
 #   docker compose up --build
 #
+# Mock data is loaded into MinIO automatically on first `docker compose up`.
+# Re-seed manually:
+#   docker compose run --rm mock-data-loader
+#   docker compose run --rm mock-data-loader python main.py --force   # overwrite
+#
+# MinIO console: http://localhost:9001  (minioadmin / minioadmin)
+#   Bucket: floodgate-waveforms
+#   Keys:   {testId}/{eventId}/{channelId}.json
+#
 # First-time Keycloak setup (one-off, after `docker compose up`)
 # ──────────────────────────────────────────────────────────────
 #   1. Open http://localhost:8080  → Admin Console (admin / admin)
 #   2. Create realm:  floodgate
-#   3. Create client: floodgate-metadata  (type: Bearer-only or Confidential)
-#   4. Create a test user and assign roles: analyst, viewer, or admin
-#   5. Obtain a token: POST http://localhost:8080/realms/floodgate/protocol/openid-connect/token
-#      (grant_type=password, client_id=floodgate-metadata, username=..., password=...)
-#   6. Call GET http://localhost:8001/api/v1/tests  with  Authorization: Bearer <token>
+#   3. Create clients: floodgate-metadata, floodgate-waveform  (Bearer-only)
+#   4. Create a test user; assign roles: analyst, viewer, or admin
+#   5. Obtain a token:
+#      POST http://localhost:8080/realms/floodgate/protocol/openid-connect/token
+#        grant_type=password  client_id=floodgate-metadata  username=…  password=…
+#   6. Test: GET http://localhost:8001/api/v1/tests            Authorization: Bearer <token>
+#            GET http://localhost:8002/api/v1/waveforms/…      Authorization: Bearer <token>
 #
-# The nginx proxy at /api/* forwards to metadata-api automatically, so the UI
-# can call /api/v1/* without CORS issues.
-#
-# To skip Keycloak entirely (prototype / mock data only), set:
-#   JWT_VERIFY_AUDIENCE=false
-# and issue any syntactically-valid JWT (the JWKS fetch will still happen on the
-# first authenticated request — point KEYCLOAK_URL at the running instance above).
+# nginx proxy routes (transparent to the React SPA):
+#   /api/v1/waveforms/*  →  waveform-api:8002
+#   /api/*               →  metadata-api:8001
 #
 # Volumes
 # ───────
-#   keycloak-data   Persists Keycloak realm/user config across restarts.
-#                   Remove with: docker compose down -v
+#   keycloak-data   Persists Keycloak realm config.
+#   minio-data      Persists waveform objects.
+#   Remove with: docker compose down -v
 
 services:
 
@@ -48,14 +60,14 @@ services:
     depends_on:
       metadata-api:
         condition: service_healthy
-    # Hardening
+      waveform-api:
+        condition: service_healthy
     security_opt:
       - no-new-privileges:true
     cap_drop:
       - ALL
     read_only: true
     tmpfs:
-      # nginx-unprivileged writes pid and temp files to /tmp
       - /tmp:mode=1777
     restart: unless-stopped
     healthcheck:
@@ -79,9 +91,6 @@ services:
       dockerfile: Dockerfile
     image: floodgate-metadata:local
     ports:
-      # Exposed for direct API testing (curl / Swagger UI at :8001/docs).
-      # Remove this port mapping in production; route all traffic through the
-      # nginx proxy instead.
       - "8001:8001"
     networks:
       - floodgate-net
@@ -89,28 +98,22 @@ services:
       ENVIRONMENT: development
       LOG_LEVEL: INFO
       USE_MOCK_DATA: "true"
-      # Keycloak — matches the dev Keycloak service below
       KEYCLOAK_URL: http://keycloak:8080
       KEYCLOAK_REALM: floodgate
       KEYCLOAK_CLIENT_ID: floodgate-metadata
-      # Allow the nginx proxy origin and direct dev access
       CORS_ORIGINS: "http://localhost:3000,http://localhost:5173"
-      # Set to false if you want to skip audience validation during initial setup
       JWT_VERIFY_AUDIENCE: "true"
-      # BFF session-cookie auth (used when nginx proxy plants the token in a cookie)
       COOKIE_AUTH_ENABLED: "true"
       UVICORN_WORKERS: "1"
     depends_on:
       keycloak:
         condition: service_healthy
-    # Hardening
     security_opt:
       - no-new-privileges:true
     cap_drop:
       - ALL
     read_only: true
     tmpfs:
-      # Python / uvicorn may write temp files; also needed for in-memory SQLite
       - /tmp:mode=1777
     restart: unless-stopped
     healthcheck:
@@ -131,9 +134,118 @@ services:
         reservations:
           memory: 128M
 
+  # ── Go waveform service ───────────────────────────────────────────────────────
+  waveform-api:
+    build:
+      context: services/waveform-service
+      dockerfile: Dockerfile
+    image: floodgate-waveform:local
+    ports:
+      - "8002:8002"
+    networks:
+      - floodgate-net
+    environment:
+      PORT: "8002"
+      ENVIRONMENT: development
+      LOG_LEVEL: INFO
+      KEYCLOAK_URL: http://keycloak:8080
+      KEYCLOAK_REALM: floodgate
+      KEYCLOAK_CLIENT_ID: floodgate-waveform
+      JWT_VERIFY_AUDIENCE: "true"
+      COOKIE_AUTH_ENABLED: "true"
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+      MINIO_USE_TLS: "false"
+      MINIO_BUCKET: floodgate-waveforms
+    depends_on:
+      keycloak:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      mock-data-loader:
+        condition: service_completed_successfully
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:mode=1777
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO", "/dev/null", "http://localhost:8002/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 128M
+        reservations:
+          memory: 64M
+
+  # ── MinIO object storage ──────────────────────────────────────────────────────
+  minio:
+    image: quay.io/minio/minio:RELEASE.2024-11-07T00-52-20Z
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # Web console  (minioadmin / minioadmin)
+    networks:
+      - floodgate-net
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    volumes:
+      - minio-data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 20s
+      timeout: 5s
+      start_period: 10s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: "0.50"
+          memory: 256M
+        reservations:
+          memory: 128M
+
+  # ── Mock waveform data loader ────────────────────────────────────────────────
+  # One-shot service: runs once to seed MinIO then exits.
+  # Skips objects that already exist (idempotent).
+  # Re-run with:  docker compose run --rm mock-data-loader
+  mock-data-loader:
+    build:
+      context: scripts/load_mock_waveforms
+      dockerfile: Dockerfile
+    image: floodgate-mock-loader:local
+    networks:
+      - floodgate-net
+    environment:
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+      MINIO_USE_TLS: "false"
+      MINIO_BUCKET: floodgate-waveforms
+    depends_on:
+      minio:
+        condition: service_healthy
+    restart: "no"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:mode=1777
+
   # ── Keycloak (dev mode) ──────────────────────────────────────────────────────
-  # Single-node dev instance — NOT suitable for production.
-  # start-dev disables TLS and clustering; persists data via a named volume.
   keycloak:
     image: quay.io/keycloak/keycloak:26.2
     command: start-dev
@@ -144,7 +256,6 @@ services:
     environment:
       KEYCLOAK_ADMIN: admin
       KEYCLOAK_ADMIN_PASSWORD: admin
-      # Store data in H2 backed by the named volume (upgrade to Postgres for staging)
       KC_DB: dev-file
       KC_HEALTH_ENABLED: "true"
       KC_HTTP_PORT: "8080"
@@ -152,14 +263,12 @@ services:
       - keycloak-data:/opt/keycloak/data
     restart: unless-stopped
     healthcheck:
-      # Keycloak 23+ exposes /health/ready on the management port (9000) or the
-      # same HTTP port when KC_HEALTH_ENABLED=true.
       test:
         - "CMD-SHELL"
         - >
           exec 3<>/dev/tcp/localhost/8080 &&
           echo -e 'GET /health/ready HTTP/1.0\r\nHost: localhost\r\n\r\n' >&3 &&
-          grep -q '\"status\":\"UP\"' <&3
+          grep -q '"status":"UP"' <&3
       interval: 30s
       timeout: 10s
       start_period: 60s
@@ -176,10 +285,11 @@ services:
 networks:
   floodgate-net:
     driver: bridge
-    # Restrict inter-container communication to named services only
-    internal: false  # must be false so keycloak healthcheck TCP works
+    internal: false
 
 # ── Volumes ───────────────────────────────────────────────────────────────────
 volumes:
   keycloak-data:
+    driver: local
+  minio-data:
     driver: local

@@ -1,0 +1,26 @@
+# ── FloodGate Waveform Service — Docker build context exclusions ───────────────
+
+# Go build caches and test artefacts
+vendor/
+*.test
+*.out
+coverage.txt
+.testcache/
+
+# Editor / OS noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.log
+
+# Git
+.git/
+.gitignore
+
+# Documentation
+*.md
+
+# Local env files (secrets must never enter the build context)
+.env
+.env.*
