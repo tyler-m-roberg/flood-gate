@@ -23,6 +23,7 @@ The prototype stack:
 | Layout engine | react-grid-layout v2 |
 | Metadata service | FastAPI (Python 3.11) |
 | Waveform service | Go 1.23 |
+| Compute service | FastAPI (Python 3.11) + NumPy + SciPy |
 | Object storage | MinIO (S3-compatible) |
 | Auth | Keycloak OIDC (Realm: `floodgate`) |
 | Reverse proxy | nginx-unprivileged (BFF gateway) |
@@ -40,7 +41,7 @@ flood-gate/
 │   │   ├── dashboard/            # react-grid-layout wrapper
 │   │   ├── layout/               # AppShell, TopBar
 │   │   ├── panels/               # ChannelPanel (sidebar)
-│   │   └── widgets/              # WaveformWidget, StatsWidget, ComparativeWidget, WidgetContainer
+│   │   └── widgets/              # WaveformWidget, StatsWidget, ComparativeWidget, FFTWidget, WidgetContainer
 │   ├── data/
 │   │   └── mockData.ts           # Deterministic mock data + waveform generator
 │   ├── pages/                    # LandingPage, TestEventsPage, WorkspacePage
@@ -57,15 +58,25 @@ flood-gate/
 │   │   │   └── routers/          # /tests, /events, /channels
 │   │   ├── Dockerfile
 │   │   └── pyproject.toml
-│   └── waveform-service/         # Go — serves waveform samples from MinIO
-│       ├── cmd/server/main.go
-│       ├── internal/
-│       │   ├── auth/             # JWKS cache + Bearer/cookie middleware
-│       │   ├── config/           # Env-var config
-│       │   ├── handler/          # HTTP handlers
-│       │   └── storage/          # MinIO client wrapper
+│   ├── waveform-service/         # Go — serves waveform samples from MinIO
+│   │   ├── cmd/server/main.go
+│   │   ├── internal/
+│   │   │   ├── auth/             # JWKS cache + Bearer/cookie middleware
+│   │   │   ├── config/           # Env-var config
+│   │   │   ├── handler/          # HTTP handlers
+│   │   │   └── storage/          # MinIO client wrapper
+│   │   ├── Dockerfile
+│   │   └── go.mod
+│   └── compute-service/          # FastAPI — FFT, PSD, and RMS envelope
+│       ├── app/
+│       │   ├── auth/             # Keycloak JWT validation, dependencies, models
+│       │   ├── config.py         # pydantic-settings
+│       │   ├── middleware/       # structlog request logging
+│       │   ├── models/           # Pydantic response schemas (FFTOut, PSDOut, EnvelopeOut)
+│       │   ├── routers/          # /compute/{testId}/{eventId}/{channelId}/*
+│       │   └── storage/          # MinIO waveform fetcher (async, executor-based)
 │       ├── Dockerfile
-│       └── go.mod
+│       └── pyproject.toml
 ├── scripts/
 │   └── load_mock_waveforms/      # Python — seeds MinIO with deterministic data
 │       ├── main.py
@@ -232,6 +243,7 @@ exposing raw service ports or requiring the browser to manage auth headers.
 | Path prefix | Upstream | Service |
 |---|---|---|
 | `/api/v1/waveforms` | `waveform-api:8002` | Go waveform service |
+| `/api/v1/compute` | `compute-api:8003` | FastAPI compute service |
 | `/api/` | `metadata-api:8001` | FastAPI metadata service |
 | `/health` | nginx itself | `return 200 "ok"` |
 | `~* \.(js\|css\|…)` | static files | immutable `1y` cache |
@@ -464,11 +476,12 @@ ENV CGO_ENABLED=0 GONOSUMDB="*" GOFLAGS="-mod=mod"
 | 3000 | ui (nginx, host-mapped from 8080) |
 | 8001 | metadata-api (FastAPI) |
 | 8002 | waveform-api (Go) |
+| 8003 | compute-api (FastAPI + NumPy/SciPy) |
 | 8080 | keycloak |
 | 9000 | minio S3 API |
 | 9001 | minio web console |
 
-Next available port for a new service: **8003**.
+Next available port for a new service: **8004**.
 
 ---
 
@@ -508,6 +521,103 @@ Next available port for a new service: **8003**.
 | `CORS_ORIGINS` | `http://localhost:5173` | Comma-separated allowed origins |
 | `UVICORN_WORKERS` | `2` | Worker process count |
 
+### Compute service
+
+| Variable | Default | Description |
+|---|---|---|
+| `PORT` | `8003` | Listen port |
+| `MINIO_ENDPOINT` | `localhost:9000` | MinIO host:port |
+| `MINIO_ACCESS_KEY` | `minioadmin` | S3 access key |
+| `MINIO_SECRET_KEY` | `minioadmin` | S3 secret key |
+| `MINIO_USE_TLS` | `false` | Enable TLS for MinIO |
+| `MINIO_BUCKET` | `floodgate-waveforms` | Waveform bucket (read-only) |
+| `CORS_ORIGINS` | `http://localhost:5173` | Comma-separated allowed origins |
+| `UVICORN_WORKERS` | `2` | Worker process count |
+
+---
+
+## Compute service design
+
+The compute service (`services/compute-service/`) performs server-side signal
+analysis on waveform data.  It fetches raw samples directly from MinIO (same
+bucket as waveform-service) to avoid inter-service HTTP round-trips.
+
+### Endpoints
+
+All endpoints are authenticated (Bearer or session cookie).  Results are
+deterministic for a given (testId, eventId, channelId) triple, so responses
+carry `Cache-Control: public, max-age=3600, immutable`.
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/health` | Unauthenticated liveness probe |
+| `GET` | `/api/v1/compute/{testId}/{eventId}/{channelId}/fft` | One-sided amplitude spectrum |
+| `GET` | `/api/v1/compute/{testId}/{eventId}/{channelId}/psd` | Power Spectral Density (Welch) |
+| `GET` | `/api/v1/compute/{testId}/{eventId}/{channelId}/envelope` | Short-time RMS envelope |
+
+### FFT endpoint
+
+Query parameters:
+- `window` — `hann` (default) | `hamming` | `blackman` | `none`
+
+Response fields:
+- `frequencies` — Hz, one-sided (0 … Nyquist)
+- `magnitudes` — amplitude in signal engineering units, normalised so a pure
+  sine at amplitude A produces a peak of A
+- `peak_frequency` — Hz of the strongest non-DC bin
+- `bin_resolution_hz` — frequency resolution = `sample_rate / n_samples`
+
+### PSD endpoint
+
+Uses Welch's averaged periodogram (75 % overlap).
+
+Query parameters:
+- `window` — `hann` (default) | `hamming` | `blackman` | `none`
+- `nperseg` — segment length in samples, 16–8192 (default 512)
+
+Response fields:
+- `frequencies`, `power_db` — one-sided PSD in dB (unit²/Hz)
+- `peak_frequency`, `noise_floor_db` (10th-percentile power level)
+
+### Envelope endpoint
+
+Short-time RMS with 75 % overlap sliding window.
+
+Query parameters:
+- `window_ms` — window length in milliseconds, >0 and ≤100 (default 1.0)
+
+Response fields:
+- `times` — window centre times in seconds
+- `envelope` — RMS amplitude per window in signal units
+- `rms_total` — overall RMS of the full signal
+
+### Implementation rules
+
+- **Blocking numpy/scipy calls MUST run in a thread-pool executor** so the
+  async event loop is never blocked:
+  ```python
+  loop = asyncio.get_event_loop()
+  result = await loop.run_in_executor(None, _compute)
+  ```
+- **Waveform fetch** uses `app/storage/waveform.py` which calls MinIO via the
+  `minio-go/v7` Python SDK in an executor.  Do not call the waveform HTTP service.
+- **Auth** is enforced via `_get_waveform` FastAPI dependency — the same
+  `get_current_user` pattern as metadata-service.
+- **Error mapping**: `WaveformNotFoundError` → 404, MinIO S3Error → 502,
+  computation exception → 500.
+- **Docker resource limits**: CPUs 2.00, memory 512M (numpy + scipy overhead).
+
+### Frontend integration
+
+- `src/api/computeClient.ts` — typed fetch wrappers (`fetchFFT`, `fetchPSD`, `fetchEnvelope`)
+- `src/components/widgets/FFTWidget.tsx` — uPlot frequency-domain canvas widget
+- `workspaceStore.ts` — `fftCache: Map<string, FFTResult>`, `loadingFFT: Set<string>`,
+  `loadFFT(testId, eventId, channelId, window?)`, `getFFT(channelKey)`
+- `FFTResult` type defined in `src/types/index.ts` uses `Float64Array` for
+  `frequencies` and `magnitudes` (consistent with `ChannelData`)
+- FFT is loaded lazily when the `FFTWidget` mounts with active channels;
+  failures are silently swallowed (widget shows "service unavailable" placeholder)
+
 ---
 
 ## Keycloak realm setup (floodgate)
@@ -518,6 +628,7 @@ Clients to create:
 |---|---|---|
 | `floodgate-metadata` | Confidential / Bearer-only | metadata-api |
 | `floodgate-waveform` | Confidential / Bearer-only | waveform-api |
+| `floodgate-compute` | Confidential / Bearer-only | compute-api |
 
 Realm roles to create: `admin`, `analyst`, `viewer`
 
