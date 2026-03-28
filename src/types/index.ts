@@ -135,3 +135,16 @@ export interface MarkerDelta {
   label1: string
   label2: string
 }
+
+// ── Compute / Frequency-domain Results ────────────────────────────────────────
+
+export interface FFTResult {
+  channelKey: string          // `${eventId}::${channelId}`
+  frequencies: Float64Array   // Hz, one-sided
+  magnitudes: Float64Array    // amplitude in signal units
+  peakFrequency: number       // Hz
+  binResolutionHz: number
+  sampleRate: number
+  window: string
+  unit: string
+}

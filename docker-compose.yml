@@ -5,6 +5,7 @@
 #   ui                React SPA (nginx)            → http://localhost:3000
 #   metadata-api      FastAPI metadata service      → http://localhost:8001
 #   waveform-api      Go waveform service           → http://localhost:8002
+#   compute-api       FastAPI compute service       → http://localhost:8003
 #   minio             MinIO object storage          → http://localhost:9000 (API)
 #                                                      http://localhost:9001 (console)
 #   mock-data-loader  One-shot MinIO seeder         → exits after first run
@@ -37,6 +38,7 @@
 #
 # nginx proxy routes (transparent to the React SPA):
 #   /api/v1/waveforms/*  →  waveform-api:8002
+#   /api/v1/compute/*    →  compute-api:8003
 #   /api/*               →  metadata-api:8001
 #
 # Volumes
@@ -61,6 +63,8 @@ services:
       metadata-api:
         condition: service_healthy
       waveform-api:
+        condition: service_healthy
+      compute-api:
         condition: service_healthy
     security_opt:
       - no-new-privileges:true
@@ -186,6 +190,65 @@ services:
           memory: 128M
         reservations:
           memory: 64M
+
+  # ── FastAPI compute service ───────────────────────────────────────────────────
+  compute-api:
+    build:
+      context: services/compute-service
+      dockerfile: Dockerfile
+    image: floodgate-compute:local
+    ports:
+      - "8003:8003"
+    networks:
+      - floodgate-net
+    environment:
+      ENVIRONMENT: development
+      LOG_LEVEL: INFO
+      PORT: "8003"
+      KEYCLOAK_URL: http://keycloak:8080
+      KEYCLOAK_REALM: floodgate
+      KEYCLOAK_CLIENT_ID: floodgate-compute
+      CORS_ORIGINS: "http://localhost:3000,http://localhost:5173"
+      JWT_VERIFY_AUDIENCE: "true"
+      COOKIE_AUTH_ENABLED: "true"
+      UVICORN_WORKERS: "2"
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+      MINIO_USE_TLS: "false"
+      MINIO_BUCKET: floodgate-waveforms
+    depends_on:
+      keycloak:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      mock-data-loader:
+        condition: service_completed_successfully
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:mode=1777
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - "CMD"
+        - "python"
+        - "-c"
+        - "import urllib.request; urllib.request.urlopen('http://localhost:8003/health').read()"
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: "2.00"
+          memory: 512M
+        reservations:
+          memory: 256M
 
   # ── MinIO object storage ──────────────────────────────────────────────────────
   minio:

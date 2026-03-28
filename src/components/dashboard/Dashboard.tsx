@@ -5,7 +5,8 @@ import { WidgetContainer } from '@/components/widgets/WidgetContainer'
 import { WaveformWidget } from '@/components/widgets/WaveformWidget'
 import { StatsWidget } from '@/components/widgets/StatsWidget'
 import { ComparativeWidget } from '@/components/widgets/ComparativeWidget'
-import { Activity, BarChart3, Layers, Plus } from 'lucide-react'
+import { FFTWidget } from '@/components/widgets/FFTWidget'
+import { Activity, BarChart3, Layers, Plus, Waves } from 'lucide-react'
 import type { WidgetConfig } from '@/types'
 
 interface DashboardProps {
@@ -63,6 +64,7 @@ export function Dashboard({ containerWidth }: DashboardProps) {
             { type: 'waveform' as const, icon: <Activity size={13} />, label: 'Add Waveform' },
             { type: 'stats' as const, icon: <BarChart3 size={13} />, label: 'Add Stats' },
             { type: 'comparative' as const, icon: <Layers size={13} />, label: 'Add Comparative' },
+            { type: 'fft' as const, icon: <Waves size={13} />, label: 'Add FFT' },
           ].map(w => (
             <button
               key={w.type}
@@ -139,6 +141,14 @@ function WidgetContent({ widget, dims }: { widget: WidgetConfig; dims: { w: numb
           height={contentH}
         />
       )
+    case 'fft':
+      return (
+        <FFTWidget
+          channelKeys={widget.channelKeys}
+          width={dims.w}
+          height={contentH}
+        />
+      )
     default:
       return (
         <div className="flex items-center justify-center h-full text-xs text-[#6e7681]">
@@ -148,7 +158,7 @@ function WidgetContent({ widget, dims }: { widget: WidgetConfig; dims: { w: numb
   }
 }
 
-function EmptyDashboard({ onAddWidget }: { onAddWidget: (type: 'waveform' | 'stats' | 'comparative') => void }) {
+function EmptyDashboard({ onAddWidget }: { onAddWidget: (type: 'waveform' | 'stats' | 'comparative' | 'fft') => void }) {
   return (
     <div className="flex flex-col items-center justify-center h-full gap-6 text-[#6e7681]">
       <div className="text-center">
@@ -179,6 +189,13 @@ function EmptyDashboard({ onAddWidget }: { onAddWidget: (type: 'waveform' | 'sta
             label: 'Comparative',
             desc: 'Overlay channels across events',
             color: '#bc8cff',
+          },
+          {
+            type: 'fft' as const,
+            icon: <Waves size={20} className="text-[#d29922]" />,
+            label: 'FFT Spectrum',
+            desc: 'Frequency-domain amplitude spectrum',
+            color: '#d29922',
           },
         ].map(w => (
           <button

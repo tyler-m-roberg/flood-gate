@@ -2,12 +2,13 @@ import { create } from 'zustand'
 import type {
   LoadedEvent, ActiveChannel, Marker,
   WidgetConfig, WidgetType, DashboardLayout,
-  ChannelStats,
+  ChannelStats, FFTResult,
 } from '@/types'
 import {
   MOCK_EVENTS, generateChannelData, computeStats, CHANNELS_BY_TEST,
 } from '@/data/mockData'
 import { fetchWaveform, buildTimeAxis } from '@/api/waveformClient'
+import { fetchFFT, type WindowFunction } from '@/api/computeClient'
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 function channelKey(eventId: string, channelId: string) {
@@ -43,6 +44,12 @@ interface WorkspaceState {
   // Stats cache
   statsCache: Map<string, ChannelStats>
   getStats(channelKey: string): ChannelStats | null
+
+  // FFT cache
+  fftCache: Map<string, FFTResult>
+  loadingFFT: Set<string>
+  loadFFT(testId: string, eventId: string, channelId: string, window?: WindowFunction): void
+  getFFT(channelKey: string): FFTResult | null
 
   // Markers
   markers: Marker[]
@@ -190,6 +197,52 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
 
   getStats(key) {
     return get().statsCache.get(key) ?? null
+  },
+
+  // ── FFT ───────────────────────────────────────────────────────────────────────
+  fftCache: new Map<string, FFTResult>(),
+  loadingFFT: new Set<string>(),
+
+  loadFFT(testId, eventId, channelId, window = 'hann') {
+    const key = channelKey(eventId, channelId)
+    const state = get()
+    if (state.fftCache.has(key) || state.loadingFFT.has(key)) return
+
+    set(s => ({ loadingFFT: new Set([...s.loadingFFT, key]) }))
+
+    void (async () => {
+      try {
+        const r = await fetchFFT(testId, eventId, channelId, window)
+        const result: FFTResult = {
+          channelKey: key,
+          frequencies: Float64Array.from(r.frequencies),
+          magnitudes: Float64Array.from(r.magnitudes),
+          peakFrequency: r.peak_frequency,
+          binResolutionHz: r.bin_resolution_hz,
+          sampleRate: r.sample_rate,
+          window: r.window,
+          unit: r.unit,
+        }
+        set(s => {
+          const fftCache = new Map(s.fftCache)
+          fftCache.set(key, result)
+          const loadingFFT = new Set(s.loadingFFT)
+          loadingFFT.delete(key)
+          return { fftCache, loadingFFT }
+        })
+      } catch {
+        // Service unavailable — silently clear loading state; widget shows placeholder
+        set(s => {
+          const loadingFFT = new Set(s.loadingFFT)
+          loadingFFT.delete(key)
+          return { loadingFFT }
+        })
+      }
+    })()
+  },
+
+  getFFT(key) {
+    return get().fftCache.get(key) ?? null
   },
 
   // ── Markers ───────────────────────────────────────────────────────────────────
