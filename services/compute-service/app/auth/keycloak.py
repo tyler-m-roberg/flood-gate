@@ -82,7 +82,7 @@ class KeycloakTokenValidator:
         ttl = self._settings.jwks_cache_ttl
         if self._jwks_client is None or (now - self._jwks_last_refresh) > ttl:
             jwks_uri = await self._discover_jwks_uri()
-            self._jwks_client = PyJWKClient(jwks_uri, lifespan=0)
+            self._jwks_client = PyJWKClient(jwks_uri, lifespan=ttl)
             await _async_fetch_jwks(self._jwks_client)
             self._jwks_last_refresh = now
             log.debug("jwks.refreshed", uri=jwks_uri)
@@ -96,7 +96,10 @@ class KeycloakTokenValidator:
                 resp.raise_for_status()
                 self._openid_config = resp.json()
                 log.debug("oidc.discovered", issuer=self._openid_config.get("issuer"))
-        return str(self._openid_config["jwks_uri"])
+        jwks_uri = str(self._openid_config["jwks_uri"])
+        external_base = self._settings.keycloak_external_url.rstrip("/")
+        internal_base = str(self._settings.keycloak_url).rstrip("/")
+        return jwks_uri.replace(external_base, internal_base)
 
     @staticmethod
     def _build_current_user(claims: TokenClaims) -> CurrentUser:

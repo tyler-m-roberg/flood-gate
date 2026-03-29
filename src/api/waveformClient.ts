@@ -33,12 +33,7 @@ export async function fetchWaveform(
 ): Promise<WaveformResponse> {
   const url = `${BASE}/${encodeURIComponent(testId)}/${encodeURIComponent(eventId)}/${encodeURIComponent(channelId)}`
 
-  const res = await fetch(url, {
-    // credentials: 'include' ensures the session cookie is forwarded in BFF mode.
-    // When running against the waveform service directly with a Bearer token,
-    // set the Authorization header via a custom fetch wrapper here.
-    credentials: 'include',
-  })
+  const res = await fetch(url, { credentials: 'include' })
 
   if (!res.ok) {
     throw new Error(`waveform fetch ${url} → HTTP ${res.status}`)

@@ -12,12 +12,16 @@ import math
 from datetime import UTC, datetime
 
 from app.models.domain import (
+    ChannelCreate,
     ChannelOut,
+    EventCreate,
     EventOut,
     EventStatus,
     SensorType,
+    TestCreate,
     TestOut,
     TestStatus,
+    TestUpdate,
 )
 
 # ── Channel colour palette ─────────────────────────────────────────────────────
@@ -295,3 +299,108 @@ class MockMetadataRepository:
             if c.id == channel_id:
                 return c
         return None
+
+    # ── Writes ────────────────────────────────────────────────────────────────
+
+    async def update_test(self, test_id: str, update: TestUpdate) -> TestOut | None:
+        t = _TESTS_BY_ID.get(test_id)
+        if t is None:
+            return None
+        patch = {k: v for k, v in update.model_dump().items() if v is not None}
+        updated = t.model_copy(update=patch)
+        _TESTS_BY_ID[test_id] = updated
+        for i, tt in enumerate(_TESTS):
+            if tt.id == test_id:
+                _TESTS[i] = updated
+                break
+        return updated
+
+    async def create_test(self, test: TestCreate) -> TestOut:
+        year = datetime.now(UTC).year
+        prefix = f"TEST-{year}-"
+        existing = [t for t in _TESTS if t.id.startswith(prefix)]
+        seq = len(existing) + 1
+        test_id = f"{prefix}{seq:03d}"
+
+        out = TestOut(
+            id=test_id,
+            name=test.name,
+            description=test.description,
+            facility=test.facility,
+            operator=test.operator,
+            created_at=datetime.now(UTC),
+            status=TestStatus.ACTIVE,
+            event_count=0,
+            tags=test.tags,
+        )
+        _TESTS.append(out)
+        _TESTS_BY_ID[test_id] = out
+        _EVENTS[test_id] = []
+        _CHANNELS[test_id] = []
+        return out
+
+    async def create_event(
+        self,
+        test_id: str,
+        event: EventCreate,
+        *,
+        sample_rate: int,
+        sample_count: int,
+        duration: float,
+        channel_count: int,
+    ) -> EventOut:
+        existing = _EVENTS.get(test_id, [])
+        seq = len(existing) + 1
+        event_id = f"EVT-{seq:03d}"
+
+        out = EventOut(
+            id=event_id,
+            test_id=test_id,
+            name=event.name,
+            description=event.description,
+            timestamp=datetime.now(UTC),
+            duration=duration,
+            sample_rate=sample_rate,
+            sample_count=sample_count,
+            status=EventStatus.COMPLETE,
+            trigger_condition=event.trigger_condition,
+            channel_count=channel_count,
+        )
+        _EVENTS.setdefault(test_id, []).append(out)
+        # Update event_count on the test
+        if test_id in _TESTS_BY_ID:
+            t = _TESTS_BY_ID[test_id]
+            updated = t.model_copy(update={"event_count": t.event_count + 1})
+            _TESTS_BY_ID[test_id] = updated
+            for i, tt in enumerate(_TESTS):
+                if tt.id == test_id:
+                    _TESTS[i] = updated
+                    break
+        return out
+
+    async def create_channels(
+        self, test_id: str, channels: list[ChannelCreate]
+    ) -> list[ChannelOut]:
+        existing_ids = {c.id for c in _CHANNELS.get(test_id, [])}
+        out: list[ChannelOut] = []
+        for idx, ch in enumerate(channels):
+            if ch.id in existing_ids:
+                for c in _CHANNELS[test_id]:
+                    if c.id == ch.id:
+                        out.append(c)
+                        break
+                continue
+            channel_out = ChannelOut(
+                id=ch.id,
+                name=ch.name,
+                unit=ch.unit,
+                sensor_type=ch.sensor_type,
+                range_min=ch.range_min,
+                range_max=ch.range_max,
+                color=_COLORS[idx % len(_COLORS)],
+                description=ch.description,
+            )
+            _CHANNELS.setdefault(test_id, []).append(channel_out)
+            existing_ids.add(ch.id)
+            out.append(channel_out)
+        return out

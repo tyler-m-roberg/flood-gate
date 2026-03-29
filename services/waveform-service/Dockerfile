@@ -45,8 +45,7 @@ RUN apk add --no-cache ca-certificates wget \
 COPY --from=builder /bin/waveform-service /usr/local/bin/waveform-service
 
 ENV PORT=8002 \
-    ENVIRONMENT=production \
-    PYTHONDONTWRITEBYTECODE=1
+    ENVIRONMENT=production
 
 USER appuser
 

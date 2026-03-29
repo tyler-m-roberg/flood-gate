@@ -40,6 +40,8 @@ from fastapi.responses import JSONResponse
 
 from app.auth.dependencies import _get_or_create_validator
 from app.config import get_settings
+from app.db.engine import dispose_engine, init_engine
+from app.storage.minio_client import init_minio
 from app.middleware import RequestLoggingMiddleware, configure_structlog
 from app.models.domain import HealthOut
 from app.routers import api_router
@@ -77,7 +79,26 @@ async def lifespan(app: FastAPI):
         except Exception as exc:
             log.warning("jwks.warmup_failed", error=str(exc), hint="will retry on first auth")
 
+    # Initialise the async database engine when not using mock data
+    if not settings.use_mock_data:
+        init_engine(
+            settings.database_url,
+            pool_size=settings.db_pool_size,
+            max_overflow=settings.db_max_overflow,
+            pool_recycle=settings.db_pool_recycle,
+        )
+        # Log host only — never log credentials
+        db_host = settings.database_url.split("@")[-1] if "@" in settings.database_url else "local"
+        log.info("db.engine_initialised", host=db_host)
+
+        # Initialise MinIO client for waveform uploads
+        init_minio(settings)
+
     yield
+
+    if not settings.use_mock_data:
+        await dispose_engine()
+        log.info("db.engine_disposed")
 
     log.info("shutdown", service=settings.service_name)
 

@@ -1,11 +1,14 @@
 import { useNavigate, useParams } from 'react-router-dom'
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import {
-  ArrowLeft, Calendar, ChevronRight, Clock, Filter, Hash,
-  Layers, Search, BarChart3, CheckCircle2, AlertCircle,
+  ArrowLeft, Calendar, ChevronRight, Clock, Edit3, Filter, Hash,
+  Layers, Loader2, Plus, Search, BarChart3, CheckCircle2, AlertCircle,
 } from 'lucide-react'
 import { MOCK_TESTS, MOCK_EVENTS } from '@/data/mockData'
-import type { TestEvent } from '@/types'
+import { fetchTests, fetchEvents } from '@/api/metadataClient'
+import { CreateEventModal } from '@/components/modals/CreateEventModal'
+import { EditTestModal } from '@/components/modals/EditTestModal'
+import type { Test, TestEvent } from '@/types'
 import { useWorkspaceStore } from '@/store/workspaceStore'
 import { cn, fmtDate, fmtDuration, fmtSampleRate } from '@/lib/utils'
 
@@ -25,9 +28,37 @@ export function TestEventsPage() {
 
   const [search, setSearch] = useState('')
   const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [showCreate, setShowCreate] = useState(false)
+  const [showEdit, setShowEdit] = useState(false)
 
-  const test = MOCK_TESTS.find(t => t.id === testId)
-  const events = testId ? (MOCK_EVENTS[testId] ?? []) : []
+  // Load test and events from API with mock fallback
+  const [test, setTest] = useState<Test | undefined>(
+    MOCK_TESTS.find(t => t.id === testId)
+  )
+  const [events, setEvents] = useState<TestEvent[]>(
+    testId ? (MOCK_EVENTS[testId] ?? []) : []
+  )
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    if (!testId) return
+    let cancelled = false
+
+    // Try to load from API
+    Promise.all([
+      fetchTests().then(d => d.items.find(t => t.id === testId)),
+      fetchEvents(testId).then(d => d.items),
+    ])
+      .then(([apiTest, apiEvents]) => {
+        if (cancelled) return
+        if (apiTest) setTest(apiTest)
+        if (apiEvents.length > 0) setEvents(apiEvents)
+      })
+      .catch(() => { /* keep mock data */ })
+      .finally(() => { if (!cancelled) setLoading(false) })
+
+    return () => { cancelled = true }
+  }, [testId])
 
   const filtered = events.filter(e =>
     e.name.toLowerCase().includes(search.toLowerCase()) ||
@@ -58,20 +89,29 @@ export function TestEventsPage() {
   if (!test) {
     return (
       <div className="flex flex-col items-center justify-center h-full text-[#6e7681]">
-        <AlertCircle size={32} className="mb-2" />
-        <p>Test not found</p>
-        <button onClick={() => navigate('/')} className="mt-3 text-[#58a6ff] text-sm hover:underline">
-          Back to tests
-        </button>
+        {loading ? (
+          <>
+            <Loader2 size={32} className="mb-2 animate-spin" />
+            <p>Loading test...</p>
+          </>
+        ) : (
+          <>
+            <AlertCircle size={32} className="mb-2" />
+            <p>Test not found</p>
+            <button onClick={() => navigate('/')} className="mt-3 text-[#58a6ff] text-sm hover:underline">
+              Back to tests
+            </button>
+          </>
+        )}
       </div>
     )
   }
 
   return (
     <div className="h-full overflow-y-auto bg-[#0d1117]">
-      <div className="max-w-6xl mx-auto px-6 py-8">
+      <div className="mx-auto px-8 py-8" style={{ maxWidth: '1400px' }}>
         {/* Header */}
-        <div className="flex items-start gap-4 mb-6">
+        <div className="flex items-start gap-4 mb-8">
           <button
             onClick={() => navigate('/')}
             className="mt-1 p-1.5 rounded-lg text-[#8b949e] hover:text-[#e6edf3] hover:bg-[#1c2128] transition-colors"
@@ -79,7 +119,16 @@ export function TestEventsPage() {
             <ArrowLeft size={16} />
           </button>
           <div className="flex-1">
-            <p className="text-xs text-[#6e7681] font-mono mb-1">{test.id}</p>
+            <div className="flex items-center gap-2 mb-1">
+              <p className="text-xs text-[#6e7681] font-mono">{test.id}</p>
+              <button
+                onClick={() => setShowEdit(true)}
+                className="p-1 rounded text-[#6e7681] hover:text-[#58a6ff] hover:bg-[#1c2128] transition-colors"
+                title="Edit test metadata"
+              >
+                <Edit3 size={12} />
+              </button>
+            </div>
             <h1 className="text-xl font-semibold text-[#e6edf3]">{test.name}</h1>
             <p className="text-sm text-[#8b949e] mt-1">{test.description}</p>
             <div className="flex flex-wrap gap-3 mt-2 text-xs text-[#6e7681]">
@@ -93,13 +142,13 @@ export function TestEventsPage() {
         </div>
 
         {/* Action bar */}
-        <div className="flex items-center gap-3 mb-4">
+        <div className="flex items-center gap-3 mb-6">
           <div className="relative flex-1 max-w-sm">
             <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[#6e7681]" />
             <input
               value={search}
               onChange={e => setSearch(e.target.value)}
-              placeholder="Search events…"
+              placeholder="Search events\u2026"
               className="w-full bg-[#161b22] border border-[#30363d] rounded-lg pl-8 pr-3 py-1.5 text-sm text-[#e6edf3] placeholder-[#6e7681] focus:outline-none focus:border-[#58a6ff] transition-colors"
             />
           </div>
@@ -109,12 +158,26 @@ export function TestEventsPage() {
             Filter
           </button>
 
+          <button
+            onClick={() => setShowCreate(true)}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-[#3fb950] border border-[#3fb95044] bg-[#3fb95011] hover:bg-[#3fb95022] transition-colors"
+          >
+            <Plus size={12} />
+            Create Event
+          </button>
+
           {selected.size > 0 && (
             <div className="flex items-center gap-2 ml-auto">
               <span className="text-xs text-[#8b949e]">{selected.size} selected</span>
               <button
+                onClick={() => setSelected(new Set())}
+                className="text-xs text-[#8b949e] hover:text-[#e6edf3] transition-colors"
+              >
+                Clear
+              </button>
+              <button
                 onClick={() => openInWorkspace(Array.from(selected))}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-[#58a6ff] text-[#0d1117] hover:bg-[#79c0ff] transition-colors"
+                className="flex items-center gap-2 px-4 py-2 rounded-md text-xs font-medium bg-[#58a6ff] text-[#0d1117] hover:bg-[#79c0ff] transition-colors"
               >
                 <BarChart3 size={12} />
                 Open in Workspace
@@ -136,17 +199,22 @@ export function TestEventsPage() {
         {/* Events table */}
         <div className="bg-[#161b22] border border-[#30363d] rounded-xl overflow-hidden">
           {/* Table header */}
-          <div className="grid grid-cols-[auto_1fr_auto_auto_auto_auto_auto] items-center px-4 py-2.5 border-b border-[#30363d] text-[10px] font-semibold text-[#6e7681] uppercase tracking-wider">
+          <div className="grid grid-cols-[auto_1fr_minmax(90px,auto)_minmax(80px,auto)_minmax(70px,auto)_minmax(90px,auto)_auto] items-center px-4 py-2.5 border-b border-[#30363d] text-[10px] font-semibold text-[#6e7681] uppercase tracking-wider">
             <div className="w-5" />
             <div>Event</div>
-            <div className="text-right pr-8">Sample Rate</div>
-            <div className="text-right pr-8">Duration</div>
-            <div className="text-right pr-8">Channels</div>
-            <div className="text-right pr-8">Trigger</div>
+            <div className="text-right pr-6">Sample Rate</div>
+            <div className="text-right pr-6">Duration</div>
+            <div className="text-right pr-6">Channels</div>
+            <div className="text-right pr-6">Trigger</div>
             <div className="text-right">Status</div>
           </div>
 
-          {filtered.length === 0 ? (
+          {loading ? (
+            <div className="flex items-center justify-center py-16 text-[#6e7681]">
+              <Loader2 size={20} className="animate-spin mr-2" />
+              Loading events...
+            </div>
+          ) : filtered.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-16 text-[#6e7681]">
               <Hash size={24} className="mb-2" />
               <p className="text-sm">No events match your search</p>
@@ -170,6 +238,22 @@ export function TestEventsPage() {
           {filtered.length} of {events.length} events · Click to select · Open selected in workspace for analysis
         </p>
       </div>
+
+      {showCreate && testId && (
+        <CreateEventModal
+          testId={testId}
+          onClose={() => setShowCreate(false)}
+          onCreated={event => setEvents(prev => [...prev, event])}
+        />
+      )}
+
+      {showEdit && test && (
+        <EditTestModal
+          test={test}
+          onClose={() => setShowEdit(false)}
+          onUpdated={updated => setTest(updated)}
+        />
+      )}
     </div>
   )
 }
@@ -189,8 +273,9 @@ function EventRow({
   return (
     <div
       onClick={onClick}
+      onDoubleClick={e => { e.stopPropagation(); if (!disabled) onOpenAlone() }}
       className={cn(
-        'grid grid-cols-[auto_1fr_auto_auto_auto_auto_auto] items-center px-4 py-3 border-b border-[#30363d] last:border-b-0 transition-colors group',
+        'grid grid-cols-[auto_1fr_minmax(90px,auto)_minmax(80px,auto)_minmax(70px,auto)_minmax(90px,auto)_auto] items-center px-4 py-3 border-b border-[#30363d] last:border-b-0 transition-colors group',
         isEven ? 'bg-[#0d1117]' : 'bg-[#161b22]',
         disabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer hover:bg-[#1c2128]',
         isSelected && 'bg-[#58a6ff0d] border-l-2 border-l-[#58a6ff]',
@@ -224,24 +309,24 @@ function EventRow({
       </div>
 
       {/* Sample rate */}
-      <div className="text-right pr-8">
+      <div className="text-right pr-6">
         <span className="text-xs font-mono text-[#58a6ff]">{fmtSampleRate(event.sampleRate)}</span>
       </div>
 
       {/* Duration */}
-      <div className="text-right pr-8">
+      <div className="text-right pr-6">
         <span className="text-xs font-mono text-[#e6edf3]">{fmtDuration(event.duration)}</span>
       </div>
 
       {/* Channels */}
-      <div className="text-right pr-8">
+      <div className="text-right pr-6">
         <span className="text-xs text-[#8b949e]">{event.channels.length} ch</span>
       </div>
 
       {/* Trigger */}
-      <div className="text-right pr-8">
+      <div className="text-right pr-6">
         <span className="text-xs text-[#6e7681] truncate max-w-[120px] block">
-          {event.triggerCondition ?? '—'}
+          {event.triggerCondition ?? '\u2014'}
         </span>
       </div>
 

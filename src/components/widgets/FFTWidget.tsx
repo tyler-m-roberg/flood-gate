@@ -2,11 +2,10 @@ import { useEffect, useRef, useCallback, useState } from 'react'
 import uPlot from 'uplot'
 import { useWorkspaceStore } from '@/store/workspaceStore'
 import type { WindowFunction } from '@/api/computeClient'
+import { GitBranch } from 'lucide-react'
 
 interface FFTWidgetProps {
-  channelKeys?: string[]
-  height: number
-  width: number
+  widgetId: string
 }
 
 const WINDOW_OPTIONS: WindowFunction[] = ['hann', 'hamming', 'blackman', 'none']
@@ -17,25 +16,35 @@ function fmtHz(hz: number): string {
   return `${hz.toFixed(0)} Hz`
 }
 
-export function FFTWidget({ channelKeys, height, width }: FFTWidgetProps) {
+export function FFTWidget({ widgetId }: FFTWidgetProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const plotRef = useRef<uPlot | null>(null)
 
   const loadedEvents = useWorkspaceStore(s => s.loadedEvents)
-  const activeChannels = useWorkspaceStore(s => s.activeChannels)
+  const widget = useWorkspaceStore(s => s.widgets.find(w => w.id === widgetId))
+  const widgetChannels = widget?.channels ?? []
+  const multiYAxis = widget?.multiYAxis ?? false
+  const updateWidget = useWorkspaceStore(s => s.updateWidget)
   const fftCache = useWorkspaceStore(s => s.fftCache)
   const loadingFFT = useWorkspaceStore(s => s.loadingFFT)
   const loadFFT = useWorkspaceStore(s => s.loadFFT)
   const getFFT = useWorkspaceStore(s => s.getFFT)
 
   const [selectedWindow, setSelectedWindow] = useState<WindowFunction>('hann')
+  const [resizeTick, setResizeTick] = useState(0)
 
-  // Which channels to display
-  const displayChannels = (channelKeys && channelKeys.length > 0)
-    ? activeChannels.filter(c => channelKeys.includes(c.key))
-    : activeChannels
+  // Track container resizes to trigger re-init
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el) return
+    const ro = new ResizeObserver(() => {
+      setResizeTick(t => t + 1)
+    })
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
 
-  const visibleChannels = displayChannels.filter(c => c.visible)
+  const visibleChannels = widgetChannels.filter(c => c.visible)
 
   // Trigger FFT loads for any visible channel not yet cached
   useEffect(() => {
@@ -65,7 +74,7 @@ export function FFTWidget({ channelKeys, height, width }: FFTWidgetProps) {
 
   const buildOptions = useCallback(
     (w: number, h: number): uPlot.Options => {
-      const plotH = Math.max(h - 8, 80)
+      const plotH = Math.max(h, 80)
 
       const loadedResults = visibleChannels
         .map(ch => ({ ch, fft: getFFT(ch.key) }))
@@ -73,7 +82,7 @@ export function FFTWidget({ channelKeys, height, width }: FFTWidgetProps) {
 
       const series: uPlot.Series[] = [
         { label: 'Frequency' },
-        ...loadedResults.map(({ ch, fft }) => {
+        ...loadedResults.map(({ ch, fft }, i) => {
           const event = loadedEvents.find(e => e.eventId === ch.eventId)
           const meta = event?.meta.channels.find(c => c.id === ch.channelId)
           const label = meta ? `${ch.eventId}:${meta.name}` : ch.key
@@ -83,9 +92,45 @@ export function FFTWidget({ channelKeys, height, width }: FFTWidgetProps) {
             stroke: ch.color,
             width: 1.5,
             points: { show: false },
+            ...(multiYAxis ? { scale: `y${i}` } : {}),
           } satisfies uPlot.Series
         }),
       ]
+
+      const scales: uPlot.Scales = { x: { time: false } }
+      let yAxes: uPlot.Axis[]
+
+      if (multiYAxis) {
+        // Independent Y-axis per channel
+        loadedResults.forEach((_r, i) => {
+          scales[`y${i}`] = { auto: true }
+        })
+        yAxes = loadedResults.map(({ ch, fft }, i) => {
+          const unit = fft?.unit ?? ''
+          return {
+            scale: `y${i}`,
+            side: i % 2 === 0 ? 3 : 1,
+            stroke: ch.color,
+            grid: { show: i === 0, stroke: '#21262d', width: 1 },
+            ticks: { stroke: '#21262d', width: 1 },
+            font: '11px system-ui',
+            labelFont: '11px system-ui',
+            label: unit ? `Magnitude [${unit}]` : 'Magnitude',
+            size: 60,
+          } satisfies uPlot.Axis
+        })
+      } else {
+        // Single shared Y-axis
+        yAxes = [{
+          stroke: '#6e7681',
+          grid: { stroke: '#21262d', width: 1 },
+          ticks: { stroke: '#21262d', width: 1 },
+          font: '11px system-ui',
+          labelFont: '11px system-ui',
+          label: 'Magnitude',
+          size: 60,
+        }]
+      }
 
       return {
         width: Math.max(w - 2, 100),
@@ -104,41 +149,35 @@ export function FFTWidget({ channelKeys, height, width }: FFTWidgetProps) {
             label: 'Frequency',
             values: (_u: uPlot, vals: number[]) => vals.map((v: number) => fmtHz(v)),
           },
-          {
-            stroke: '#6e7681',
-            grid: { stroke: '#21262d', width: 1 },
-            ticks: { stroke: '#21262d', width: 1 },
-            font: '11px system-ui',
-            labelFont: '11px system-ui',
-            label: 'Magnitude',
-            size: 60,
-          },
+          ...yAxes,
         ],
-        scales: {
-          x: { time: false },
-        },
+        scales,
         series,
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [visibleChannels, fftCache, loadedEvents]
+    [visibleChannels, fftCache, loadedEvents, multiYAxis]
   )
 
   // Init / re-init uPlot whenever composition or dimensions change
   useEffect(() => {
-    if (!containerRef.current || width < 10 || height < 10) return
+    const el = containerRef.current
+    if (!el) return
+
+    // Destroy old plot and clear container FIRST so measurement is accurate
+    plotRef.current?.destroy()
+    plotRef.current = null
+    el.innerHTML = ''
+
+    const w = Math.floor(el.clientWidth)
+    const h = Math.floor(el.clientHeight)
+    if (w < 10 || h < 10) return
 
     const loadedCount = visibleChannels.filter(ch => getFFT(ch.key) != null).length
     if (loadedCount === 0) return
 
     const data = buildData()
-    const opts = buildOptions(width, height)
-
-    plotRef.current?.destroy()
-    plotRef.current = null
-
-    const el = containerRef.current
-    el.innerHTML = ''
+    const opts = buildOptions(w, h)
 
     try {
       plotRef.current = new uPlot(opts, data, el)
@@ -151,7 +190,7 @@ export function FFTWidget({ channelKeys, height, width }: FFTWidgetProps) {
       plotRef.current = null
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [visibleChannels.map(c => c.key).join(','), fftCache.size, width, height])
+  }, [visibleChannels.map(c => c.key).join(','), visibleChannels.map(c => c.color).join(','), fftCache.size, resizeTick, multiYAxis])
 
   // Update data without full rebuild when new FFT results arrive
   useEffect(() => {
@@ -213,26 +252,39 @@ export function FFTWidget({ channelKeys, height, width }: FFTWidgetProps) {
           )}
         </div>
 
-        {/* Window selector */}
-        <div className="flex items-center gap-1 shrink-0">
-          <span className="text-[10px] text-[#6e7681]">Window:</span>
-          <select
-            value={selectedWindow}
-            onChange={e => handleWindowChange(e.target.value as WindowFunction)}
-            className="text-[10px] bg-[#1c2128] border border-[#30363d] text-[#8b949e] rounded px-1 py-0.5 focus:outline-none focus:border-[#58a6ff]"
+        {/* Window selector + Y-axis toggle */}
+        <div className="flex items-center gap-2 shrink-0">
+          <div className="flex items-center gap-1">
+            <span className="text-[10px] text-[#6e7681]">Window:</span>
+            <select
+              value={selectedWindow}
+              onChange={e => handleWindowChange(e.target.value as WindowFunction)}
+              className="text-[10px] bg-[#1c2128] border border-[#30363d] text-[#8b949e] rounded px-1 py-0.5 focus:outline-none focus:border-[#58a6ff]"
+            >
+              {WINDOW_OPTIONS.map(w => (
+                <option key={w} value={w}>{w}</option>
+              ))}
+            </select>
+          </div>
+          <button
+            onClick={e => { e.stopPropagation(); updateWidget(widgetId, { multiYAxis: !multiYAxis }) }}
+            title={multiYAxis ? 'Switch to shared Y-axis' : 'Switch to independent Y-axes'}
+            className={`p-1 rounded transition-colors ${
+              multiYAxis
+                ? 'bg-[#58a6ff33] text-[#58a6ff]'
+                : 'text-[#6e7681] hover:text-[#e6edf3] hover:bg-[#1c2128]'
+            }`}
           >
-            {WINDOW_OPTIONS.map(w => (
-              <option key={w} value={w}>{w}</option>
-            ))}
-          </select>
+            <GitBranch size={12} />
+          </button>
         </div>
       </div>
 
       {/* Plot area */}
-      <div className="flex-1 min-h-0 relative">
+      <div className="flex-1 min-h-0 relative overflow-hidden">
         <div
           ref={containerRef}
-          className="w-full h-full"
+          className="w-full h-full overflow-hidden"
           style={{ background: '#0d1117' }}
         />
 

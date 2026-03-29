@@ -1,12 +1,11 @@
-import { useCallback, useRef } from 'react'
+import { useCallback } from 'react'
 import GridLayout, { type Layout, type LayoutItem } from 'react-grid-layout'
 import { useWorkspaceStore } from '@/store/workspaceStore'
 import { WidgetContainer } from '@/components/widgets/WidgetContainer'
 import { WaveformWidget } from '@/components/widgets/WaveformWidget'
 import { StatsWidget } from '@/components/widgets/StatsWidget'
-import { ComparativeWidget } from '@/components/widgets/ComparativeWidget'
 import { FFTWidget } from '@/components/widgets/FFTWidget'
-import { Activity, BarChart3, Layers, Plus, Waves } from 'lucide-react'
+import { Activity, BarChart3, Plus, Waves } from 'lucide-react'
 import type { WidgetConfig } from '@/types'
 
 interface DashboardProps {
@@ -23,33 +22,24 @@ export function Dashboard({ containerWidth }: DashboardProps) {
   const addWidget = useWorkspaceStore(s => s.addWidget)
   const loadedEvents = useWorkspaceStore(s => s.loadedEvents)
 
-  const widgetDims = useRef<Map<string, { w: number; h: number }>>(new Map())
-
   const onLayoutChange = useCallback((newLayout: Layout) => {
     const items = newLayout as LayoutItem[]
     setLayout(items.map(item => ({
       i: item.i, x: item.x, y: item.y, w: item.w, h: item.h,
-      minW: item.minW, minH: item.minH,
+      minW: item.minW, maxW: item.maxW ?? 12, minH: item.minH,
     })))
-    items.forEach(item => {
-      widgetDims.current.set(item.i, {
-        w: Math.floor((item.w / 12) * containerWidth),
-        h: item.h * ROW_HEIGHT + (item.h - 1) * 4,
-      })
-    })
-  }, [setLayout, containerWidth])
-
-  function getWidgetDims(widgetId: string) {
-    if (widgetDims.current.has(widgetId)) return widgetDims.current.get(widgetId)!
-    const item = layout.find(l => l.i === widgetId)
-    if (!item) return { w: 600, h: 300 }
-    return {
-      w: Math.floor((item.w / 12) * containerWidth),
-      h: item.h * ROW_HEIGHT + (item.h - 1) * 4,
-    }
-  }
+  }, [setLayout])
 
   const visibleWidgets = widgets.filter(w => !w.poppedOut)
+
+  // Build layout with static flag for locked widgets
+  const effectiveLayout = layout.map(item => {
+    const widget = widgets.find(w => w.id === item.i)
+    if (widget?.locked) {
+      return { ...item, static: true } as LayoutItem
+    }
+    return item as LayoutItem
+  })
 
   if (loadedEvents.length === 0) {
     return <EmptyDashboard onAddWidget={addWidget} />
@@ -63,7 +53,6 @@ export function Dashboard({ containerWidth }: DashboardProps) {
           {[
             { type: 'waveform' as const, icon: <Activity size={13} />, label: 'Add Waveform' },
             { type: 'stats' as const, icon: <BarChart3 size={13} />, label: 'Add Stats' },
-            { type: 'comparative' as const, icon: <Layers size={13} />, label: 'Add Comparative' },
             { type: 'fft' as const, icon: <Waves size={13} />, label: 'Add FFT' },
           ].map(w => (
             <button
@@ -83,7 +72,7 @@ export function Dashboard({ containerWidth }: DashboardProps) {
   return (
     <div className="h-full overflow-y-auto">
       <GridLayout
-        layout={layout as LayoutItem[]}
+        layout={effectiveLayout}
         width={containerWidth}
         onLayoutChange={onLayoutChange}
         gridConfig={{
@@ -102,53 +91,26 @@ export function Dashboard({ containerWidth }: DashboardProps) {
         }}
         className="layout"
       >
-        {visibleWidgets.map(widget => {
-          const dims = getWidgetDims(widget.id)
-          return (
-            <div key={widget.id}>
-              <WidgetContainer widget={widget}>
-                <WidgetContent widget={widget} dims={dims} />
-              </WidgetContainer>
-            </div>
-          )
-        })}
+        {visibleWidgets.map(widget => (
+          <div key={widget.id}>
+            <WidgetContainer widget={widget}>
+              <WidgetContent widget={widget} />
+            </WidgetContainer>
+          </div>
+        ))}
       </GridLayout>
     </div>
   )
 }
 
-function WidgetContent({ widget, dims }: { widget: WidgetConfig; dims: { w: number; h: number } }) {
-  const HEADER_HEIGHT = 30
-  const contentH = Math.max(dims.h - HEADER_HEIGHT, 60)
-
+function WidgetContent({ widget }: { widget: WidgetConfig }) {
   switch (widget.type) {
     case 'waveform':
-      return (
-        <WaveformWidget
-          channelKeys={widget.channelKeys}
-          width={dims.w}
-          height={contentH}
-        />
-      )
+      return <WaveformWidget widgetId={widget.id} />
     case 'stats':
-      return <StatsWidget channelKeys={widget.channelKeys} />
-    case 'comparative':
-      return (
-        <ComparativeWidget
-          widgetId={widget.id}
-          channelKeys={widget.channelKeys}
-          width={dims.w}
-          height={contentH}
-        />
-      )
+      return <StatsWidget widgetId={widget.id} />
     case 'fft':
-      return (
-        <FFTWidget
-          channelKeys={widget.channelKeys}
-          width={dims.w}
-          height={contentH}
-        />
-      )
+      return <FFTWidget widgetId={widget.id} />
     default:
       return (
         <div className="flex items-center justify-center h-full text-xs text-[#6e7681]">
@@ -158,7 +120,7 @@ function WidgetContent({ widget, dims }: { widget: WidgetConfig; dims: { w: numb
   }
 }
 
-function EmptyDashboard({ onAddWidget }: { onAddWidget: (type: 'waveform' | 'stats' | 'comparative' | 'fft') => void }) {
+function EmptyDashboard({ onAddWidget }: { onAddWidget: (type: 'waveform' | 'stats' | 'fft') => void }) {
   return (
     <div className="flex flex-col items-center justify-center h-full gap-6 text-[#6e7681]">
       <div className="text-center">
@@ -182,13 +144,6 @@ function EmptyDashboard({ onAddWidget }: { onAddWidget: (type: 'waveform' | 'sta
             label: 'Statistics',
             desc: 'Min, max, RMS, rise time & more',
             color: '#3fb950',
-          },
-          {
-            type: 'comparative' as const,
-            icon: <Layers size={20} className="text-[#bc8cff]" />,
-            label: 'Comparative',
-            desc: 'Overlay channels across events',
-            color: '#bc8cff',
           },
           {
             type: 'fft' as const,

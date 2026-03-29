@@ -1,14 +1,15 @@
 import { create } from 'zustand'
 import type {
-  LoadedEvent, ActiveChannel, Marker,
+  LoadedEvent, WidgetChannel, Marker,
   WidgetConfig, WidgetType, DashboardLayout,
-  ChannelStats, FFTResult,
+  ChannelStats, FFTResult, ChannelMeta,
 } from '@/types'
 import {
   MOCK_EVENTS, generateChannelData, computeStats, CHANNELS_BY_TEST,
 } from '@/data/mockData'
 import { fetchWaveform, buildTimeAxis } from '@/api/waveformClient'
 import { fetchFFT, type WindowFunction } from '@/api/computeClient'
+import { fetchEvents, fetchChannels } from '@/api/metadataClient'
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 function channelKey(eventId: string, channelId: string) {
@@ -34,12 +35,12 @@ interface WorkspaceState {
   unloadEvent(eventId: string): void
   isEventLoaded(eventId: string): boolean
 
-  // Active channels (selected for display)
-  activeChannels: ActiveChannel[]
+  // Per-widget channel selection
+  selectedWidgetId: string | null
+  setSelectedWidget(id: string | null): void
   toggleChannel(eventId: string, channelId: string): void
-  isChannelActive(eventId: string, channelId: string): boolean
-  setChannelVisible(key: string, visible: boolean): void
-  clearChannels(): void
+  setChannelVisibleForWidget(widgetId: string, key: string, visible: boolean): void
+  setChannelColor(widgetId: string, key: string, color: string): void
 
   // Stats cache
   statsCache: Map<string, ChannelStats>
@@ -62,11 +63,21 @@ interface WorkspaceState {
   addWidget(type: WidgetType): void
   removeWidget(id: string): void
   updateWidget(id: string, patch: Partial<WidgetConfig>): void
-  assignChannelsToWidget(widgetId: string, keys: string[]): void
 
   // Dashboard layout
   layout: DashboardLayout[]
   setLayout(layout: DashboardLayout[]): void
+
+  // Refresh
+  refreshWorkspace(): void
+
+  // Save/load dashboard
+  saveDashboard(testId: string): void
+  loadDashboard(testId: string): boolean
+
+  // Dashboard mode
+  dashboardMode: 'analysis' | 'realtime'
+  setDashboardMode(mode: 'analysis' | 'realtime'): void
 
   // Pop-out tracking
   poppedOutWindows: Map<string, Window>
@@ -86,17 +97,48 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     const state = get()
     if (state.isEventLoaded(eventId) || state.loadingEvents.has(eventId)) return
 
-    const events = MOCK_EVENTS[testId] ?? []
-    const eventMeta = events.find(e => e.id === eventId)
-    if (!eventMeta) return
-
-    const channels = CHANNELS_BY_TEST[testId] ?? []
-    const eventIndex = events.findIndex(e => e.id === eventId)
-
     // Mark loading immediately so callers can show a spinner
     set(s => ({ loadingEvents: new Set([...s.loadingEvents, eventId]) }))
 
     void (async () => {
+      // Try to get event metadata from mock data first, then API
+      let eventMeta = (MOCK_EVENTS[testId] ?? []).find(e => e.id === eventId)
+      let channels: ChannelMeta[] = CHANNELS_BY_TEST[testId] ?? []
+
+      if (!eventMeta) {
+        // Not in mock data — fetch from API
+        try {
+          const apiEvents = await fetchEvents(testId)
+          eventMeta = apiEvents.items.find(e => e.id === eventId)
+        } catch {
+          // API unavailable
+        }
+      }
+
+      if (!eventMeta) {
+        // Still not found — remove from loading and bail
+        set(s => {
+          const loadingEvents = new Set(s.loadingEvents)
+          loadingEvents.delete(eventId)
+          return { loadingEvents }
+        })
+        return
+      }
+
+      // Use channels from event metadata if available, otherwise from mock data / API
+      if (eventMeta.channels.length > 0) {
+        channels = eventMeta.channels
+      } else if (channels.length === 0) {
+        try {
+          channels = await fetchChannels(testId)
+        } catch {
+          // API unavailable
+        }
+      }
+
+      const events = MOCK_EVENTS[testId] ?? []
+      const eventIndex = events.findIndex(e => e.id === eventId)
+
       // Fetch all channels in parallel; fall back to local generation on error
       const results = await Promise.allSettled(
         channels.map(ch => fetchWaveform(testId, eventId, ch.id))
@@ -116,8 +158,19 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
               sampleRate: r.sample_rate,
             }]
           }
-          // API unavailable or 401 — generate locally so the UI still works
-          return [ch.id, generateChannelData(ch, eventMeta, eventIndex)]
+          // API unavailable — generate locally if mock data exists
+          if (eventIndex >= 0) {
+            return [ch.id, generateChannelData(ch, eventMeta!, eventIndex)]
+          }
+          // No fallback available — create empty channel data
+          return [ch.id, {
+            channelId: ch.id,
+            eventId,
+            testId,
+            times: new Float64Array(0),
+            values: new Float64Array(0),
+            sampleRate: eventMeta!.sampleRate || 400000,
+          }]
         })
       )
 
@@ -131,7 +184,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         const loadingEvents = new Set(s.loadingEvents)
         loadingEvents.delete(eventId)
         return {
-          loadedEvents: [...s.loadedEvents, { testId, eventId, meta: eventMeta, channels: channelDataMap }],
+          loadedEvents: [...s.loadedEvents, { testId, eventId, meta: eventMeta!, channels: channelDataMap }],
           statsCache: newStats,
           loadingEvents,
         }
@@ -142,7 +195,10 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   unloadEvent(eventId) {
     set(s => ({
       loadedEvents: s.loadedEvents.filter(e => e.eventId !== eventId),
-      activeChannels: s.activeChannels.filter(ch => ch.eventId !== eventId),
+      widgets: s.widgets.map(w => ({
+        ...w,
+        channels: w.channels.filter(ch => ch.eventId !== eventId),
+      })),
     }))
   },
 
@@ -150,46 +206,72 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     return get().loadedEvents.some(e => e.eventId === eventId)
   },
 
-  // ── Channels ─────────────────────────────────────────────────────────────────
-  activeChannels: [],
+  // ── Per-widget channel selection ──────────────────────────────────────────────
+  selectedWidgetId: null,
+  setSelectedWidget(id) { set({ selectedWidgetId: id }) },
 
   toggleChannel(eventId, channelId) {
+    const state = get()
+    const widgetId = state.selectedWidgetId
+    if (!widgetId) return // no-op when no widget is selected
+
+    const widget = state.widgets.find(w => w.id === widgetId)
+    if (!widget) return
+
     const key = channelKey(eventId, channelId)
-    const existing = get().activeChannels.find(c => c.key === key)
+    const existing = widget.channels.find(c => c.key === key)
 
     if (existing) {
-      set(s => ({ activeChannels: s.activeChannels.filter(c => c.key !== key) }))
-      return
+      // Remove channel from this widget
+      set(s => ({
+        widgets: s.widgets.map(w =>
+          w.id === widgetId
+            ? { ...w, channels: w.channels.filter(c => c.key !== key) }
+            : w
+        ),
+      }))
+    } else {
+      // Add channel to this widget
+      const event = state.loadedEvents.find(e => e.eventId === eventId)
+      const channelsMeta = event?.meta.channels ?? CHANNELS_BY_TEST[event?.testId ?? ''] ?? []
+      const meta = channelsMeta.find(c => c.id === channelId)
+      const usedColors = widget.channels.map(c => c.color)
+      const color = meta?.color ?? '#58a6ff'
+
+      const newChannel: WidgetChannel = {
+        key, eventId, channelId, testId: event?.testId ?? '',
+        color: usedColors.includes(color) ? shiftColor(color, widget.channels.length) : color,
+        visible: true,
+      }
+
+      set(s => ({
+        widgets: s.widgets.map(w =>
+          w.id === widgetId
+            ? { ...w, channels: [...w.channels, newChannel] }
+            : w
+        ),
+      }))
     }
-
-    // Find color from channel meta
-    const event = get().loadedEvents.find(e => e.eventId === eventId)
-    const channels = CHANNELS_BY_TEST[event?.testId ?? ''] ?? []
-    const meta = channels.find(c => c.id === channelId)
-    const usedColors = get().activeChannels.map(c => c.color)
-    const color = meta?.color ?? '#58a6ff'
-
-    const newChannel: ActiveChannel = {
-      key, eventId, channelId, testId: event?.testId ?? '',
-      color: usedColors.includes(color) ? shiftColor(color, get().activeChannels.length) : color,
-      visible: true,
-    }
-
-    set(s => ({ activeChannels: [...s.activeChannels, newChannel] }))
   },
 
-  isChannelActive(eventId, channelId) {
-    return get().activeChannels.some(c => c.key === channelKey(eventId, channelId))
-  },
-
-  setChannelVisible(key, visible) {
+  setChannelVisibleForWidget(widgetId, key, visible) {
     set(s => ({
-      activeChannels: s.activeChannels.map(c => c.key === key ? { ...c, visible } : c),
+      widgets: s.widgets.map(w =>
+        w.id === widgetId
+          ? { ...w, channels: w.channels.map(c => c.key === key ? { ...c, visible } : c) }
+          : w
+      ),
     }))
   },
 
-  clearChannels() {
-    set({ activeChannels: [] })
+  setChannelColor(widgetId, key, color) {
+    set(s => ({
+      widgets: s.widgets.map(w =>
+        w.id === widgetId
+          ? { ...w, channels: w.channels.map(c => c.key === key ? { ...c, color } : c) }
+          : w
+      ),
+    }))
   },
 
   // ── Stats ─────────────────────────────────────────────────────────────────────
@@ -271,24 +353,24 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     const titles: Record<WidgetType, string> = {
       waveform: 'Waveform View',
       stats: 'Channel Statistics',
-      comparative: 'Comparative View',
       fft: 'FFT Spectrum',
       correlation: 'Cross-Correlation',
     }
     const widget: WidgetConfig = {
-      id, type, title: titles[type], poppedOut: false,
-      channelKeys: [],
+      id, type, title: titles[type] ?? type, poppedOut: false,
+      channels: [],
+      locked: false,
     }
 
-    const currentLayout = get().layout
     const newLayout: DashboardLayout = {
       i: id,
-      x: (currentLayout.length * 2) % 12,
+      x: 0,
       y: Infinity,
-      w: type === 'stats' ? 12 : 6,
+      w: 12,
       h: type === 'stats' ? 5 : 8,
-      minW: 3,
-      minH: 4,
+      minW: 2,
+      maxW: 12,
+      minH: 3,
     }
 
     set(s => ({
@@ -301,6 +383,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     set(s => ({
       widgets: s.widgets.filter(w => w.id !== id),
       layout: s.layout.filter(l => l.i !== id),
+      selectedWidgetId: s.selectedWidgetId === id ? null : s.selectedWidgetId,
     }))
   },
 
@@ -310,15 +393,57 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     }))
   },
 
-  assignChannelsToWidget(widgetId, keys) {
-    set(s => ({
-      widgets: s.widgets.map(w => w.id === widgetId ? { ...w, channelKeys: keys } : w),
-    }))
-  },
-
   // ── Layout ────────────────────────────────────────────────────────────────────
   layout: [],
   setLayout(layout) { set({ layout }) },
+
+  // ── Refresh ───────────────────────────────────────────────────────────────────
+  refreshWorkspace() {
+    const state = get()
+    const events = [...state.loadedEvents]
+    // Clear all loaded events and re-fetch them
+    set({ loadedEvents: [], statsCache: new Map(), fftCache: new Map() })
+    events.forEach(e => {
+      get().loadEvent(e.testId, e.eventId)
+    })
+  },
+
+  // ── Save/Load dashboard ───────────────────────────────────────────────────────
+  saveDashboard(testId) {
+    const state = get()
+    const config = {
+      widgets: state.widgets,
+      layout: state.layout,
+    }
+    localStorage.setItem(`floodgate-dashboard-${testId}`, JSON.stringify(config))
+  },
+
+  loadDashboard(testId) {
+    const raw = localStorage.getItem(`floodgate-dashboard-${testId}`)
+    if (!raw) return false
+    try {
+      const config = JSON.parse(raw)
+      if (config.widgets && config.layout) {
+        // Migration: old format used channelKeys instead of channels
+        const widgets = config.widgets.map((w: WidgetConfig & { channelKeys?: string[] }) => ({
+          ...w,
+          channels: w.channels ?? [],
+        }))
+        const layout = config.layout.map((l: DashboardLayout) => ({
+          ...l,
+          maxW: l.maxW ?? 12,
+        }))
+        set({ widgets, layout })
+        return true
+      }
+    } catch { /* ignore invalid data */ }
+    return false
+  },
+
+  // ── Pop-outs ──────────────────────────────────────────────────────────────────
+  // ── Dashboard mode ────────────────────────────────────────────────────────────
+  dashboardMode: 'analysis',
+  setDashboardMode(mode) { set({ dashboardMode: mode }) },
 
   // ── Pop-outs ──────────────────────────────────────────────────────────────────
   poppedOutWindows: new Map(),

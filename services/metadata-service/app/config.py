@@ -54,6 +54,9 @@ class Settings(BaseSettings):
     # Use "account" if your Keycloak realm issues tokens without resource audience.
     jwt_audience: str = ""                # defaults to keycloak_client_id if blank
     jwt_algorithms: list[str] = ["RS256"]
+    # Override the expected JWT issuer when the external Keycloak URL differs
+    # from the internal container URL (e.g. localhost:8080 vs keycloak:8080)
+    keycloak_issuer_override: str = ""
     # How many seconds to cache the JWKS before re-fetching (handles key rotation)
     jwks_cache_ttl: int = 300
     # Whether to require a verified audience claim (set False for dev if needed)
@@ -67,21 +70,55 @@ class Settings(BaseSettings):
     cookie_auth_enabled: bool = True
     session_cookie_name: str = "session_token"
 
+    # ── BFF OIDC flow ─────────────────────────────────────────────────────────
+    # The BFF auth router handles the OIDC authorization code flow on behalf of
+    # the SPA.  It uses a confidential client so the secret never reaches the
+    # browser.
+    bff_client_id: str = "floodgate-bff"
+    bff_client_secret: str = "floodgate-bff-secret"
+    # Where the SPA lives — used for redirect_uri and post-logout redirect
+    bff_app_url: str = "http://localhost:3000"
+    # Browser-facing Keycloak URL (used for redirects that go through the browser)
+    # Differs from keycloak_url which is the internal container-to-container URL.
+    keycloak_external_url: str = "http://localhost:8080"
+
+    @property
+    def keycloak_external_issuer(self) -> str:
+        return f"{self.keycloak_external_url}/realms/{self.keycloak_realm}"
+
     # ── Database ───────────────────────────────────────────────────────────────
-    # SQLite (dev/test) or PostgreSQL (prod).
+    # PostgreSQL via asyncpg (prod) or SQLite (dev/test).
     # Example: "postgresql+asyncpg://user:pass@host:5432/floodgate"
     database_url: str = "sqlite+aiosqlite:///./floodgate_meta.db"
     # Use in-memory mock data instead of the database (prototype mode)
     use_mock_data: bool = True
+    # Connection pool settings (ignored when USE_MOCK_DATA=true)
+    db_pool_size: int = 5
+    db_max_overflow: int = 10
+    db_pool_recycle: int = 300
+
+    # ── MinIO / S3 (waveform upload) ──────────────────────────────────────────
+    minio_endpoint: str = "localhost:9000"
+    minio_access_key: str = "minioadmin"
+    minio_secret_key: str = "minioadmin"
+    minio_bucket: str = "floodgate-waveforms"
+    minio_use_tls: bool = False
 
     # ── Derived helpers ────────────────────────────────────────────────────────
     @property
     def keycloak_issuer(self) -> str:
-        return f"{self.keycloak_url}/realms/{self.keycloak_realm}"
+        if self.keycloak_issuer_override:
+            return self.keycloak_issuer_override
+        base = str(self.keycloak_url).rstrip("/")
+        return f"{base}/realms/{self.keycloak_realm}"
 
     @property
     def keycloak_openid_config_url(self) -> str:
-        return f"{self.keycloak_issuer}/.well-known/openid-configuration"
+        # Always use the internal URL for server-to-server OIDC discovery.
+        # keycloak_issuer may be overridden to the external URL for JWT iss
+        # claim validation, but JWKS must be fetched via the internal network.
+        base = str(self.keycloak_url).rstrip("/")
+        return f"{base}/realms/{self.keycloak_realm}/.well-known/openid-configuration"
 
     @property
     def effective_jwt_audience(self) -> str:

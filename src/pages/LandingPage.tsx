@@ -1,6 +1,9 @@
 import { useNavigate } from 'react-router-dom'
-import { Activity, Archive, ChevronRight, Tag, Users, Zap } from 'lucide-react'
+import { useState, useEffect } from 'react'
+import { Activity, Archive, ChevronRight, Loader2, Plus, Tag, Users, Zap } from 'lucide-react'
 import { MOCK_TESTS } from '@/data/mockData'
+import { fetchTests } from '@/api/metadataClient'
+import { CreateTestModal } from '@/components/modals/CreateTestModal'
 import type { Test } from '@/types'
 import { fmtDate } from '@/lib/utils'
 import { cn } from '@/lib/utils'
@@ -19,8 +22,21 @@ const STATUS_DOT: Record<Test['status'], string> = {
 
 export function LandingPage() {
   const navigate = useNavigate()
-  const active = MOCK_TESTS.filter(t => t.status === 'active')
-  const archived = MOCK_TESTS.filter(t => t.status !== 'active')
+  const [tests, setTests] = useState<Test[]>(MOCK_TESTS)
+  const [loading, setLoading] = useState(true)
+  const [showCreate, setShowCreate] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    fetchTests()
+      .then(data => { if (!cancelled) setTests(data.items) })
+      .catch(() => { /* keep mock data as fallback */ })
+      .finally(() => { if (!cancelled) setLoading(false) })
+    return () => { cancelled = true }
+  }, [])
+
+  const active = tests.filter(t => t.status === 'active')
+  const archived = tests.filter(t => t.status !== 'active')
 
   return (
     <div className="h-full overflow-y-auto bg-[#0d1117]">
@@ -46,7 +62,7 @@ export function LandingPage() {
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-10">
           {[
             { label: 'Active Tests', value: active.length, icon: <Zap size={14} />, color: 'text-[#58a6ff]' },
-            { label: 'Total Events', value: MOCK_TESTS.reduce((s, t) => s + t.eventCount, 0), icon: <Activity size={14} />, color: 'text-[#3fb950]' },
+            { label: 'Total Events', value: tests.reduce((s, t) => s + t.eventCount, 0), icon: <Activity size={14} />, color: 'text-[#3fb950]' },
             { label: 'Analysts', value: 3, icon: <Users size={14} />, color: 'text-[#bc8cff]' },
             { label: 'Archived', value: archived.length, icon: <Archive size={14} />, color: 'text-[#6e7681]' },
           ].map(stat => (
@@ -61,21 +77,41 @@ export function LandingPage() {
         </div>
 
         {/* Active tests */}
-        <section className="mb-8">
-          <h2 className="text-xs font-semibold text-[#6e7681] uppercase tracking-widest mb-3">
-            Active Tests
-          </h2>
-          <div className="grid gap-3">
-            {active.map(test => (
-              <TestCard key={test.id} test={test} onClick={() => navigate(`/test/${test.id}`)} />
-            ))}
+        <section className="mb-10">
+          <div className="flex items-center justify-between mb-5">
+            <h2 className="text-xs font-semibold text-[#6e7681] uppercase tracking-widest">
+              Active Tests
+            </h2>
+            <button
+              onClick={() => setShowCreate(true)}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-[#58a6ff] text-[#0d1117] hover:bg-[#79c0ff] transition-colors"
+            >
+              <Plus size={12} />
+              Create Test
+            </button>
           </div>
+
+          {loading ? (
+            <div className="flex items-center justify-center py-12 text-[#6e7681]">
+              <Loader2 size={20} className="animate-spin mr-2" />
+              Loading tests...
+            </div>
+          ) : (
+            <div className="grid gap-3">
+              {active.map(test => (
+                <TestCard key={test.id} test={test} onClick={() => navigate(`/test/${test.id}`)} />
+              ))}
+              {active.length === 0 && (
+                <p className="text-sm text-[#6e7681] py-4 text-center">No active tests</p>
+              )}
+            </div>
+          )}
         </section>
 
         {/* Archived */}
         {archived.length > 0 && (
           <section>
-            <h2 className="text-xs font-semibold text-[#6e7681] uppercase tracking-widest mb-3">
+            <h2 className="text-xs font-semibold text-[#6e7681] uppercase tracking-widest mb-5">
               Archived
             </h2>
             <div className="grid gap-3">
@@ -86,6 +122,13 @@ export function LandingPage() {
           </section>
         )}
       </div>
+
+      {showCreate && (
+        <CreateTestModal
+          onClose={() => setShowCreate(false)}
+          onCreated={test => setTests(prev => [test, ...prev])}
+        />
+      )}
     </div>
   )
 }
@@ -94,7 +137,7 @@ function TestCard({ test, onClick }: { test: Test; onClick(): void }) {
   return (
     <button
       onClick={onClick}
-      className="w-full text-left bg-[#161b22] border border-[#30363d] rounded-xl p-4 hover:border-[#58a6ff44] hover:bg-[#161b22] transition-all group"
+      className="w-full text-left bg-[#161b22] border border-[#30363d] rounded-xl p-5 hover:border-[#58a6ff44] hover:bg-[#161b22] transition-all group"
     >
       <div className="flex items-start justify-between gap-3">
         <div className="flex-1 min-w-0">

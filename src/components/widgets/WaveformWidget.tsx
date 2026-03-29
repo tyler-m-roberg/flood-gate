@@ -2,55 +2,96 @@ import { useEffect, useRef, useCallback, useState } from 'react'
 import uPlot from 'uplot'
 import { useWorkspaceStore } from '@/store/workspaceStore'
 import { fmtTime } from '@/lib/utils'
-import { MapPin, Trash2, ZoomIn, ZoomOut, RotateCcw } from 'lucide-react'
+import { MapPin, Trash2, ZoomIn, ZoomOut, RotateCcw, GitBranch } from 'lucide-react'
 
 interface WaveformWidgetProps {
-  widgetId?: string
-  channelKeys?: string[]
-  height: number
-  width: number
+  widgetId: string
 }
 
-export function WaveformWidget({ channelKeys, height, width }: WaveformWidgetProps) {
+export function WaveformWidget({ widgetId }: WaveformWidgetProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const plotRef = useRef<uPlot | null>(null)
   const isDragging = useRef(false)
 
   const loadedEvents = useWorkspaceStore(s => s.loadedEvents)
-  const activeChannels = useWorkspaceStore(s => s.activeChannels)
+  const widget = useWorkspaceStore(s => s.widgets.find(w => w.id === widgetId))
+  const widgetChannels = widget?.channels ?? []
+  const multiYAxis = widget?.multiYAxis ?? false
+  const updateWidget = useWorkspaceStore(s => s.updateWidget)
   const markers = useWorkspaceStore(s => s.markers)
   const addMarker = useWorkspaceStore(s => s.addMarker)
   const removeMarker = useWorkspaceStore(s => s.removeMarker)
 
-  // Which channels to display — if widgetId has explicit channelKeys use those,
-  // otherwise fall back to ALL active channels
-  const displayChannels = (channelKeys && channelKeys.length > 0)
-    ? activeChannels.filter(c => channelKeys.includes(c.key))
-    : activeChannels
-
-  const visibleChannels = displayChannels.filter(c => c.visible)
+  const visibleChannels = widgetChannels.filter(c => c.visible)
 
   const [addingMarker, setAddingMarker] = useState(false)
   const [xCursor, setXCursor] = useState<number | null>(null)
+  const [resizeTick, setResizeTick] = useState(0)
 
-  // ── Build uPlot series data ──────────────────────────────────────────────────
+  // Track container resizes to trigger re-init
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el) return
+    const ro = new ResizeObserver(() => {
+      setResizeTick(t => t + 1)
+    })
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
+
+  // ── Build uPlot series data with common time axis for mixed sample rates ────
   function buildData(): uPlot.AlignedData {
     if (visibleChannels.length === 0) {
       return [new Float64Array([0]), new Float64Array([0])]
     }
 
-    const firstCh = visibleChannels[0]
-    const firstEvent = loadedEvents.find(e => e.eventId === firstCh.eventId)
-    const firstData = firstEvent?.channels.get(firstCh.channelId)
-    if (!firstData) return [new Float64Array([0]), new Float64Array([0])]
+    // Gather all channel data
+    const channelDatas = visibleChannels.map(ch => {
+      const event = loadedEvents.find(e => e.eventId === ch.eventId)
+      return event?.channels.get(ch.channelId) ?? null
+    })
 
-    const times = firstData.times
+    // Find the channel with the highest sample rate to use as the common time axis
+    let bestIdx = 0
+    let bestRate = 0
+    channelDatas.forEach((d, i) => {
+      if (d && d.sampleRate > bestRate) { bestRate = d.sampleRate; bestIdx = i }
+    })
+
+    const refData = channelDatas[bestIdx]
+    if (!refData || refData.times.length === 0) {
+      return [new Float64Array([0]), new Float64Array([0])]
+    }
+
+    const times = refData.times
     const ySeries: Float64Array[] = []
 
-    for (const ch of visibleChannels) {
-      const event = loadedEvents.find(e => e.eventId === ch.eventId)
-      const data = event?.channels.get(ch.channelId)
-      ySeries.push(data?.values ?? new Float64Array(times.length).fill(0))
+    for (let i = 0; i < visibleChannels.length; i++) {
+      const data = channelDatas[i]
+      if (!data || data.values.length === 0) {
+        ySeries.push(new Float64Array(times.length).fill(0))
+      } else if (data.times.length === times.length && data.sampleRate === bestRate) {
+        // Same sample rate — use directly
+        ySeries.push(data.values)
+      } else {
+        // Different sample rate — linearly interpolate onto common time axis
+        const interpolated = new Float64Array(times.length)
+        const srcTimes = data.times
+        const srcVals = data.values
+        let j = 0
+        for (let k = 0; k < times.length; k++) {
+          const t = times[k]
+          while (j < srcTimes.length - 2 && srcTimes[j + 1] < t) j++
+          if (j >= srcTimes.length - 1) {
+            interpolated[k] = srcVals[srcVals.length - 1]
+          } else {
+            const t0 = srcTimes[j], t1 = srcTimes[j + 1]
+            const frac = t1 !== t0 ? (t - t0) / (t1 - t0) : 0
+            interpolated[k] = srcVals[j] + frac * (srcVals[j + 1] - srcVals[j])
+          }
+        }
+        ySeries.push(interpolated)
+      }
     }
 
     return [times, ...ySeries]
@@ -59,11 +100,11 @@ export function WaveformWidget({ channelKeys, height, width }: WaveformWidgetPro
   // ── uPlot options ────────────────────────────────────────────────────────────
   const buildOptions = useCallback(
     (w: number, h: number): uPlot.Options => {
-      const plotH = Math.max(h - 40, 80) // reserve space for marker bar
+      const plotH = Math.max(h, 80)
 
       const series: uPlot.Series[] = [
         { label: 'Time' },
-        ...visibleChannels.map(ch => {
+        ...visibleChannels.map((ch, i) => {
           const event = loadedEvents.find(e => e.eventId === ch.eventId)
           const channelMeta = event?.meta.channels.find(c => c.id === ch.channelId)
           return {
@@ -71,9 +112,46 @@ export function WaveformWidget({ channelKeys, height, width }: WaveformWidgetPro
             stroke: ch.color,
             width: 1.5,
             points: { show: false },
+            ...(multiYAxis ? { scale: `y${i}` } : {}),
           } satisfies uPlot.Series
         }),
       ]
+
+      const scales: uPlot.Scales = { x: { time: false } }
+      let yAxes: uPlot.Axis[]
+
+      if (multiYAxis) {
+        // Independent Y-axis per channel
+        visibleChannels.forEach((_ch, i) => {
+          scales[`y${i}`] = { auto: true }
+        })
+        yAxes = visibleChannels.map((ch, i) => {
+          const event = loadedEvents.find(e => e.eventId === ch.eventId)
+          const channelMeta = event?.meta.channels.find(c => c.id === ch.channelId)
+          const unit = channelMeta?.unit ?? ''
+          return {
+            scale: `y${i}`,
+            side: i % 2 === 0 ? 3 : 1,
+            stroke: ch.color,
+            grid: { show: i === 0, stroke: '#21262d', width: 1 },
+            ticks: { stroke: '#21262d', width: 1 },
+            font: '11px system-ui',
+            labelFont: '11px system-ui',
+            label: unit,
+            size: 56,
+          } satisfies uPlot.Axis
+        })
+      } else {
+        // Single shared Y-axis
+        yAxes = [{
+          stroke: '#6e7681',
+          grid: { stroke: '#21262d', width: 1 },
+          ticks: { stroke: '#21262d', width: 1 },
+          font: '11px system-ui',
+          labelFont: '11px system-ui',
+          size: 56,
+        }]
+      }
 
       return {
         width: Math.max(w - 2, 100),
@@ -92,18 +170,9 @@ export function WaveformWidget({ channelKeys, height, width }: WaveformWidgetPro
             labelFont: '11px system-ui',
             values: (_u: uPlot, vals: number[]) => vals.map((v: number) => fmtTime(v)),
           },
-          {
-            stroke: '#6e7681',
-            grid: { stroke: '#21262d', width: 1 },
-            ticks: { stroke: '#21262d', width: 1 },
-            font: '11px system-ui',
-            labelFont: '11px system-ui',
-            size: 56,
-          },
+          ...yAxes,
         ],
-        scales: {
-          x: { time: false },
-        },
+        scales,
         series,
         plugins: [markerPlugin(markers, addMarker, addingMarker)],
         hooks: {
@@ -115,23 +184,28 @@ export function WaveformWidget({ channelKeys, height, width }: WaveformWidgetPro
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [visibleChannels, loadedEvents, markers, addingMarker]
+    [visibleChannels, loadedEvents, markers, addingMarker, multiYAxis]
   )
 
   // ── Init / re-init uPlot ─────────────────────────────────────────────────────
   useEffect(() => {
-    if (!containerRef.current || width < 10 || height < 10) return
+    const el = containerRef.current
+    if (!el) return
 
-    const data = buildData()
-    const opts = buildOptions(width, height)
-
+    // Destroy old plot and clear container FIRST so measurement is accurate
     if (plotRef.current) {
       plotRef.current.destroy()
       plotRef.current = null
     }
-
-    const el = containerRef.current
     el.innerHTML = ''
+
+    // Now measure the empty container
+    const w = Math.floor(el.clientWidth)
+    const h = Math.floor(el.clientHeight)
+    if (w < 10 || h < 10) return
+
+    const data = buildData()
+    const opts = buildOptions(w, h)
 
     try {
       plotRef.current = new uPlot(opts, data, el)
@@ -143,9 +217,9 @@ export function WaveformWidget({ channelKeys, height, width }: WaveformWidgetPro
       plotRef.current?.destroy()
       plotRef.current = null
     }
-  // Rebuild on any relevant change
+  // Rebuild on any relevant change (including color/axis mode changes which require new series opts)
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [visibleChannels.length, markers.length, width, height, addingMarker])
+  }, [visibleChannels.length, visibleChannels.map(c => c.color).join(','), markers.length, resizeTick, addingMarker, multiYAxis])
 
   // Update data without full rebuild when series composition doesn't change
   useEffect(() => {
@@ -159,8 +233,10 @@ export function WaveformWidget({ channelKeys, height, width }: WaveformWidgetPro
   }, [visibleChannels.map(c => c.key).join(',')])
 
   function resetZoom() {
-    plotRef.current?.setScale('x', { min: undefined as unknown as number, max: undefined as unknown as number })
-    plotRef.current?.redraw()
+    const u = plotRef.current
+    if (!u || !u.data[0] || u.data[0].length === 0) return
+    const times = u.data[0]
+    u.setScale('x', { min: times[0], max: times[times.length - 1] })
   }
 
   return (
@@ -200,18 +276,40 @@ export function WaveformWidget({ channelKeys, height, width }: WaveformWidgetPro
         <div className="flex items-center gap-1 shrink-0">
           <ToolBtn
             icon={<ZoomIn size={12} />}
-            title="Scroll to zoom, drag to pan"
-            onClick={() => {}}
+            title="Zoom in 2×"
+            onClick={() => {
+              const u = plotRef.current
+              if (!u) return
+              const xMin = u.scales.x.min ?? 0
+              const xMax = u.scales.x.max ?? 1
+              const mid = (xMin + xMax) / 2
+              const quarter = (xMax - xMin) / 4
+              u.setScale('x', { min: mid - quarter, max: mid + quarter })
+            }}
           />
           <ToolBtn
             icon={<ZoomOut size={12} />}
-            title="Reset zoom"
-            onClick={resetZoom}
+            title="Zoom out 2×"
+            onClick={() => {
+              const u = plotRef.current
+              if (!u) return
+              const xMin = u.scales.x.min ?? 0
+              const xMax = u.scales.x.max ?? 1
+              const mid = (xMin + xMax) / 2
+              const half = (xMax - xMin)
+              u.setScale('x', { min: mid - half, max: mid + half })
+            }}
           />
           <ToolBtn
             icon={<RotateCcw size={12} />}
             title="Reset view"
             onClick={resetZoom}
+          />
+          <ToolBtn
+            icon={<GitBranch size={12} />}
+            title={multiYAxis ? 'Switch to shared Y-axis' : 'Switch to independent Y-axes'}
+            onClick={() => updateWidget(widgetId, { multiYAxis: !multiYAxis })}
+            active={multiYAxis}
           />
           <ToolBtn
             icon={<MapPin size={12} />}
@@ -254,7 +352,7 @@ export function WaveformWidget({ channelKeys, height, width }: WaveformWidgetPro
       {/* Plot container */}
       <div
         ref={containerRef}
-        className={`flex-1 min-h-0 ${addingMarker ? 'cursor-crosshair' : 'cursor-default'}`}
+        className={`flex-1 min-h-0 overflow-hidden ${addingMarker ? 'cursor-crosshair' : 'cursor-default'}`}
         style={{ background: '#0d1117' }}
         onMouseDown={() => { isDragging.current = false }}
         onMouseMove={() => { isDragging.current = true }}

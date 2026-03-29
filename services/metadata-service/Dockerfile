@@ -7,9 +7,9 @@ FROM python:3.11-slim-bookworm AS builder
 
 WORKDIR /build
 
-# Build tools required by native extensions (cryptography → cffi → OpenSSL)
+# Build tools required by native extensions (cryptography, psycopg2)
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends gcc libffi-dev libssl-dev \
+    && apt-get install -y --no-install-recommends gcc libffi-dev libssl-dev libpq-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Layer-cache: install only when pyproject.toml changes.
@@ -29,6 +29,11 @@ LABEL org.opencontainers.image.title="floodgate-metadata" \
       org.opencontainers.image.description="FloodGate metadata REST API" \
       org.opencontainers.image.source="https://github.com/tyler-m-roberg/flood-gate"
 
+# Runtime dependency for psycopg2 (PostgreSQL client library)
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libpq5 \
+    && rm -rf /var/lib/apt/lists/*
+
 # Dedicated non-root user with explicit UID/GID for auditability
 RUN groupadd --system --gid 1001 appgroup \
     && useradd  --system --uid 1001 --gid appgroup --no-create-home appuser
@@ -37,6 +42,10 @@ WORKDIR /app
 
 # Copy pre-built venv from the installer stage (no build tools in runtime image)
 COPY --from=builder /opt/venv /opt/venv
+
+# Copy Alembic configuration and migrations
+COPY alembic.ini ./
+COPY alembic/ ./alembic/
 
 # Copy application source (invalidates this layer on any source change, not deps)
 COPY app/ ./app/
@@ -59,10 +68,11 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=20s --retries=3 \
     CMD python -c \
         "import urllib.request; urllib.request.urlopen('http://localhost:8001/health').read()"
 
-# Exec-form CMD: no shell wrapper, PID 1 receives signals directly.
-# Override UVICORN_WORKERS via compose environment or `docker run -e`.
+# Run Alembic migrations (if DB is configured), then start uvicorn.
+# When USE_MOCK_DATA=true the migration step is skipped.
 CMD ["sh", "-c", \
-     "uvicorn app.main:app \
+     "if [ \"$USE_MOCK_DATA\" != \"true\" ]; then python -m alembic upgrade head; fi && \
+      uvicorn app.main:app \
         --host 0.0.0.0 \
         --port 8001 \
         --workers ${UVICORN_WORKERS:-2} \

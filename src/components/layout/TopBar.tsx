@@ -3,25 +3,34 @@ import {
   ChevronRight, Activity, LogOut, Settings,
   BarChart3, Layers, Home,
 } from 'lucide-react'
-import { useAuthStore, MOCK_USERS } from '@/store/authStore'
+import { useAuthStore } from '@/store/authStore'
 import { useWorkspaceStore } from '@/store/workspaceStore'
-import { MOCK_TESTS } from '@/data/mockData'
 import { cn } from '@/lib/utils'
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
+import { fetchTests } from '@/api/metadataClient'
+import type { Test } from '@/types'
 
 export function TopBar() {
   const navigate = useNavigate()
   const { testId, eventId } = useParams<{ testId: string; eventId: string }>()
   const user = useAuthStore(s => s.user)
-  const login = useAuthStore(s => s.login)
+  const logout = useAuthStore(s => s.logout)
   const loadedEvents = useWorkspaceStore(s => s.loadedEvents)
   const [showUserMenu, setShowUserMenu] = useState(false)
-  const [showDevSwitcher, setShowDevSwitcher] = useState(false)
+  const [testName, setTestName] = useState<string | null>(null)
 
-  const test = testId ? MOCK_TESTS.find(t => t.id === testId) : null
+  useEffect(() => {
+    if (!testId) { setTestName(null); return }
+    fetchTests()
+      .then(data => {
+        const t = data.items.find((t: Test) => t.id === testId)
+        setTestName(t?.name ?? null)
+      })
+      .catch(() => {})
+  }, [testId])
 
   return (
-    <header className="flex items-center h-12 px-4 border-b border-[#30363d] bg-[#161b22] shrink-0 z-50">
+    <header className="flex items-center h-12 px-6 border-b border-[#30363d] bg-[#161b22] shrink-0 z-50">
       {/* Logo + breadcrumbs */}
       <div className="flex items-center gap-2 flex-1 min-w-0">
         <button
@@ -39,7 +48,7 @@ export function TopBar() {
               onClick={() => navigate(`/test/${testId}`)}
               className="text-sm text-[#8b949e] hover:text-white transition-colors truncate max-w-[180px]"
             >
-              {test?.name ?? testId}
+              {testName ?? testId}
             </button>
           </>
         )}
@@ -66,34 +75,7 @@ export function TopBar() {
       )}
 
       {/* Right — user menu */}
-      <div className="flex items-center gap-3">
-        {/* DEV: user switcher */}
-        <div className="relative">
-          <button
-            onClick={() => setShowDevSwitcher(p => !p)}
-            className="text-[10px] text-[#6e7681] border border-[#30363d] rounded px-1.5 py-0.5 hover:border-[#58a6ff] transition-colors"
-          >
-            DEV
-          </button>
-          {showDevSwitcher && (
-            <div className="absolute right-0 top-full mt-1 bg-[#161b22] border border-[#30363d] rounded-lg shadow-xl z-50 min-w-[180px] py-1">
-              <p className="text-[10px] text-[#6e7681] px-3 py-1 uppercase tracking-wide">Switch user</p>
-              {MOCK_USERS.map(u => (
-                <button
-                  key={u.id}
-                  onClick={() => { login(u.id); setShowDevSwitcher(false) }}
-                  className={cn(
-                    'w-full text-left px-3 py-1.5 text-xs hover:bg-[#1c2128] transition-colors',
-                    u.id === user?.id ? 'text-[#58a6ff]' : 'text-[#e6edf3]'
-                  )}
-                >
-                  {u.name} <span className="text-[#6e7681]">({u.roles[0]})</span>
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
-
+      <div className="flex items-center gap-3 shrink-0 ml-3">
         <div className="relative">
           <button
             onClick={() => setShowUserMenu(p => !p)}
@@ -121,7 +103,10 @@ export function TopBar() {
               <button className="w-full text-left px-3 py-2 text-sm text-[#8b949e] hover:bg-[#1c2128] flex items-center gap-2 transition-colors">
                 <Settings size={14} /> Preferences
               </button>
-              <button className="w-full text-left px-3 py-2 text-sm text-[#f85149] hover:bg-[#1c2128] flex items-center gap-2 transition-colors">
+              <button
+                onClick={logout}
+                className="w-full text-left px-3 py-2 text-sm text-[#f85149] hover:bg-[#1c2128] flex items-center gap-2 transition-colors"
+              >
                 <LogOut size={14} /> Sign out
               </button>
             </div>

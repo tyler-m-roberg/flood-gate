@@ -5,7 +5,8 @@
 FROM python:3.11-slim-bookworm AS runtime
 
 LABEL org.opencontainers.image.title="floodgate-mock-loader" \
-      org.opencontainers.image.description="Loads deterministic mock waveforms into MinIO"
+      org.opencontainers.image.description="Loads deterministic mock waveforms into MinIO" \
+      org.opencontainers.image.source="https://github.com/tyler-m-roberg/flood-gate"
 
 RUN groupadd --system --gid 1001 appgroup \
     && useradd  --system --uid 1001 --gid appgroup --no-create-home appuser
@@ -18,7 +19,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY main.py .
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    PYTHONHASHSEED=random
 
 USER appuser
 

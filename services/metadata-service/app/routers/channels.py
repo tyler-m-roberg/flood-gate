@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.auth import CurrentUser, get_current_user
 from app.db.dependencies import get_repo
-from app.db.mock import MockMetadataRepository
+from app.db.protocol import MetadataRepository
 from app.models.domain import ChannelListOut, ChannelOut, SensorType
 
 router = APIRouter(tags=["channels"])
@@ -26,7 +26,7 @@ router = APIRouter(tags=["channels"])
 async def list_channels(
     test_id: str,
     sensor_type: SensorType | None = Query(default=None, description="Filter by sensor type"),
-    repo: MockMetadataRepository = Depends(get_repo),
+    repo: MetadataRepository = Depends(get_repo),
     _user: CurrentUser = Depends(get_current_user),
 ) -> ChannelListOut:
     """
@@ -56,7 +56,7 @@ async def list_channels(
 async def get_channel(
     test_id: str,
     channel_id: str,
-    repo: MockMetadataRepository = Depends(get_repo),
+    repo: MetadataRepository = Depends(get_repo),
     _user: CurrentUser = Depends(get_current_user),
 ) -> ChannelOut:
     test = await repo.get_test(test_id)

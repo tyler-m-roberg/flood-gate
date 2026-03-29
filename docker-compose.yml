@@ -24,17 +24,19 @@
 #   Bucket: floodgate-waveforms
 #   Keys:   {testId}/{eventId}/{channelId}.json
 #
-# First-time Keycloak setup (one-off, after `docker compose up`)
-# ──────────────────────────────────────────────────────────────
-#   1. Open http://localhost:8080  → Admin Console (admin / admin)
-#   2. Create realm:  floodgate
-#   3. Create clients: floodgate-metadata, floodgate-waveform  (Bearer-only)
-#   4. Create a test user; assign roles: analyst, viewer, or admin
-#   5. Obtain a token:
-#      POST http://localhost:8080/realms/floodgate/protocol/openid-connect/token
-#        grant_type=password  client_id=floodgate-metadata  username=…  password=…
-#   6. Test: GET http://localhost:8001/api/v1/tests            Authorization: Bearer <token>
-#            GET http://localhost:8002/api/v1/waveforms/…      Authorization: Bearer <token>
+# Keycloak auto-setup
+# ───────────────────
+#   The floodgate realm is auto-imported from keycloak/floodgate-realm.json
+#   on first startup (when keycloak-data volume is empty).
+#
+#   Pre-configured test users:
+#     admin   / admin    (roles: admin, analyst)
+#     analyst / analyst  (roles: analyst)
+#     viewer  / viewer   (roles: viewer)
+#
+#   To re-import the realm after changes:
+#     docker compose down -v   # removes keycloak-data volume
+#     docker compose up --build
 #
 # nginx proxy routes (transparent to the React SPA):
 #   /api/v1/waveforms/*  →  waveform-api:8002
@@ -43,11 +45,55 @@
 #
 # Volumes
 # ───────
+#   postgres-data   Persists metadata PostgreSQL data.
 #   keycloak-data   Persists Keycloak realm config.
 #   minio-data      Persists waveform objects.
 #   Remove with: docker compose down -v
 
 services:
+
+  # ── PostgreSQL ──────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-bookworm
+    ports:
+      - "5432:5432"
+    networks:
+      - floodgate-net
+    environment:
+      POSTGRES_DB: floodgate_meta
+      POSTGRES_USER: floodgate
+      POSTGRES_PASSWORD: floodgate_dev
+      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - SETGID
+      - SETUID
+    read_only: true
+    tmpfs:
+      - /tmp:mode=1777
+      - /run/postgresql:mode=0770
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U floodgate -d floodgate_meta"]
+      interval: 10s
+      timeout: 5s
+      start_period: 10s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: "1.00"
+          memory: 256M
+        reservations:
+          memory: 128M
 
   # ── React SPA ───────────────────────────────────────────────────────────────
   ui:
@@ -73,9 +119,11 @@ services:
     read_only: true
     tmpfs:
       - /tmp:mode=1777
+      - /var/cache/nginx:mode=0755
+      - /var/run:mode=0755
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "wget", "-qO", "/dev/null", "http://localhost:8080/health"]
+      test: ["CMD", "wget", "-qO", "/dev/null", "http://127.0.0.1:8080/health"]
       interval: 30s
       timeout: 5s
       start_period: 15s
@@ -101,16 +149,33 @@ services:
     environment:
       ENVIRONMENT: development
       LOG_LEVEL: INFO
-      USE_MOCK_DATA: "true"
+      USE_MOCK_DATA: "false"
+      DATABASE_URL: "postgresql+asyncpg://floodgate:floodgate_dev@postgres:5432/floodgate_meta"
+      DB_POOL_SIZE: "5"
+      DB_MAX_OVERFLOW: "10"
       KEYCLOAK_URL: http://keycloak:8080
       KEYCLOAK_REALM: floodgate
       KEYCLOAK_CLIENT_ID: floodgate-metadata
-      CORS_ORIGINS: "http://localhost:3000,http://localhost:5173"
-      JWT_VERIFY_AUDIENCE: "true"
+      KEYCLOAK_ISSUER_OVERRIDE: http://localhost:8080/realms/floodgate
+      CORS_ORIGINS: '["http://localhost:3000","http://localhost:5173"]'
+      JWT_VERIFY_AUDIENCE: "false"
       COOKIE_AUTH_ENABLED: "true"
       UVICORN_WORKERS: "1"
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: minioadmin
+      MINIO_SECRET_KEY: minioadmin
+      MINIO_USE_TLS: "false"
+      MINIO_BUCKET: floodgate-waveforms
+      BFF_CLIENT_ID: floodgate-bff
+      BFF_CLIENT_SECRET: floodgate-bff-secret
+      BFF_APP_URL: http://localhost:3000
+      KEYCLOAK_EXTERNAL_URL: http://localhost:8080
     depends_on:
+      postgres:
+        condition: service_healthy
       keycloak:
+        condition: service_healthy
+      minio:
         condition: service_healthy
     security_opt:
       - no-new-privileges:true
@@ -155,7 +220,8 @@ services:
       KEYCLOAK_URL: http://keycloak:8080
       KEYCLOAK_REALM: floodgate
       KEYCLOAK_CLIENT_ID: floodgate-waveform
-      JWT_VERIFY_AUDIENCE: "true"
+      KEYCLOAK_ISSUER_OVERRIDE: http://localhost:8080/realms/floodgate
+      JWT_VERIFY_AUDIENCE: "false"
       COOKIE_AUTH_ENABLED: "true"
       MINIO_ENDPOINT: minio:9000
       MINIO_ACCESS_KEY: minioadmin
@@ -208,8 +274,10 @@ services:
       KEYCLOAK_URL: http://keycloak:8080
       KEYCLOAK_REALM: floodgate
       KEYCLOAK_CLIENT_ID: floodgate-compute
-      CORS_ORIGINS: "http://localhost:3000,http://localhost:5173"
-      JWT_VERIFY_AUDIENCE: "true"
+      KEYCLOAK_ISSUER_OVERRIDE: http://localhost:8080/realms/floodgate
+      KEYCLOAK_EXTERNAL_URL: http://localhost:8080
+      CORS_ORIGINS: '["http://localhost:3000","http://localhost:5173"]'
+      JWT_VERIFY_AUDIENCE: "false"
       COOKIE_AUTH_ENABLED: "true"
       UVICORN_WORKERS: "2"
       MINIO_ENDPOINT: minio:9000
@@ -264,6 +332,13 @@ services:
       MINIO_ROOT_PASSWORD: minioadmin
     volumes:
       - minio-data:/data
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:mode=1777
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
@@ -311,30 +386,41 @@ services:
   # ── Keycloak (dev mode) ──────────────────────────────────────────────────────
   keycloak:
     image: quay.io/keycloak/keycloak:26.2
-    command: start-dev
+    command: start-dev --import-realm
     ports:
       - "8080:8080"
     networks:
       - floodgate-net
     environment:
-      KEYCLOAK_ADMIN: admin
-      KEYCLOAK_ADMIN_PASSWORD: admin
+      # Updated to use the new Bootstrap Admin variables
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
       KC_DB: dev-file
       KC_HEALTH_ENABLED: "true"
       KC_HTTP_PORT: "8080"
+      # Fix issuer: ensure tokens always carry iss=http://localhost:8080/...
+      # regardless of whether the request came from inside the Docker network
+      # (http://keycloak:8080) or the browser (http://localhost:8080).
+      KC_HOSTNAME: localhost
+      KC_HOSTNAME_PORT: "8080"
+      KC_HOSTNAME_STRICT: "false"
     volumes:
       - keycloak-data:/opt/keycloak/data
+      - ./keycloak/floodgate-realm.json:/opt/keycloak/data/import/floodgate-realm.json:ro
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp:mode=1777
     restart: unless-stopped
     healthcheck:
       test:
         - "CMD-SHELL"
-        - >
-          exec 3<>/dev/tcp/localhost/8080 &&
-          echo -e 'GET /health/ready HTTP/1.0\r\nHost: localhost\r\n\r\n' >&3 &&
-          grep -q '"status":"UP"' <&3
+        - "bash -c 'exec 3<>/dev/tcp/localhost/9000 && echo -e \"GET /health/ready HTTP/1.0\\r\\nHost: localhost\\r\\n\\r\\n\" >&3 && grep -q UP <&3'"
       interval: 30s
       timeout: 10s
-      start_period: 60s
+      start_period: 180s # Increased to 3 minutes to account for low CPU/RAM limits
       retries: 5
     deploy:
       resources:
@@ -352,6 +438,8 @@ networks:
 
 # ── Volumes ───────────────────────────────────────────────────────────────────
 volumes:
+  postgres-data:
+    driver: local
   keycloak-data:
     driver: local
   minio-data:

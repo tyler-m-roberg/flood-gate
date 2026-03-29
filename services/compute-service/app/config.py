@@ -49,6 +49,8 @@ class Settings(BaseSettings):
     jwt_algorithms: list[str] = ["RS256"]
     jwks_cache_ttl: int = 300
     jwt_verify_audience: bool = True
+    keycloak_issuer_override: str = ""
+    keycloak_external_url: str = "http://localhost:8080"
 
     # ── BFF session cookie ─────────────────────────────────────────────────────
     cookie_auth_enabled: bool = True
@@ -64,11 +66,15 @@ class Settings(BaseSettings):
     # ── Derived helpers ────────────────────────────────────────────────────────
     @property
     def keycloak_issuer(self) -> str:
-        return f"{self.keycloak_url}/realms/{self.keycloak_realm}"
+        if self.keycloak_issuer_override:
+            return self.keycloak_issuer_override
+        base = str(self.keycloak_url).rstrip("/")
+        return f"{base}/realms/{self.keycloak_realm}"
 
     @property
     def keycloak_openid_config_url(self) -> str:
-        return f"{self.keycloak_issuer}/.well-known/openid-configuration"
+        base = str(self.keycloak_url).rstrip("/")
+        return f"{base}/realms/{self.keycloak_realm}/.well-known/openid-configuration"
 
     @property
     def effective_jwt_audience(self) -> str:

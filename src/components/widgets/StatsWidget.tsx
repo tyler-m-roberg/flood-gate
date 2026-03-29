@@ -4,19 +4,15 @@ import { BarChart3, ArrowDown, ArrowUp, TrendingUp, Activity } from 'lucide-reac
 import type { ChannelStats } from '@/types'
 
 interface StatsWidgetProps {
-  channelKeys?: string[]
+  widgetId: string
 }
 
-export function StatsWidget({ channelKeys }: StatsWidgetProps) {
-  const activeChannels = useWorkspaceStore(s => s.activeChannels)
+export function StatsWidget({ widgetId }: StatsWidgetProps) {
+  const widgetChannels = useWorkspaceStore(s => s.widgets.find(w => w.id === widgetId)?.channels ?? [])
   const getStats = useWorkspaceStore(s => s.getStats)
 
-  const displayChannels = (channelKeys && channelKeys.length > 0)
-    ? activeChannels.filter(c => channelKeys.includes(c.key))
-    : activeChannels
-
   const rows: Array<{ stats: ChannelStats; color: string }> = []
-  for (const ch of displayChannels) {
+  for (const ch of widgetChannels) {
     const stats = getStats(ch.key)
     if (stats) rows.push({ stats, color: ch.color })
   }

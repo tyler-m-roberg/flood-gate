@@ -107,6 +107,46 @@ class PaginationParams(BaseModel):
     limit: Annotated[int, Field(ge=1, le=500)] = 50
 
 
+# ── Input schemas (creation) ───────────────────────────────────────────────────
+
+class TestCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    description: str = ""
+    facility: str = Field(min_length=1, max_length=200)
+    operator: str = Field(min_length=1, max_length=100)
+    tags: list[str] = []
+
+
+class TestUpdate(BaseModel):
+    name: str | None = None
+    description: str | None = None
+    facility: str | None = None
+    operator: str | None = None
+    tags: list[str] | None = None
+    status: TestStatus | None = None
+
+
+class EventCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    description: str = ""
+    trigger_condition: str | None = None
+
+
+class ChannelCreate(BaseModel):
+    id: str = Field(min_length=1, max_length=20)
+    name: str = Field(min_length=1, max_length=100)
+    unit: str = Field(min_length=1, max_length=20)
+    sensor_type: SensorType
+    range_min: float
+    range_max: float
+    description: str = ""
+
+
+class UploadEventPayload(BaseModel):
+    event: EventCreate
+    channels: list[ChannelCreate] = Field(min_length=1)
+
+
 # ── Health ─────────────────────────────────────────────────────────────────────
 
 class HealthOut(BaseModel):

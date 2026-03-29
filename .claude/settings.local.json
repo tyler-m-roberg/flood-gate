@@ -1,0 +1,23 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(docker compose:*)",
+      "Bash(curl:*)",
+      "Bash(docker exec:*)",
+      "Bash(grep -r \"@playwright\\\\|from playwright\\\\|import playwright\" /c/Users/theoz/source/repos/flood-gate --include=*.py --include=*.ts)",
+      "Bash(python -m pytest test_widget_sizing.py -v --timeout=120)",
+      "Bash(python -m pytest test_widget_sizing.py -v)",
+      "Bash(npm ls:*)",
+      "Bash(docker run:*)",
+      "Bash(python:*)",
+      "Bash(find C:Userstheozsourcereposflood-gatenode_modulesreact-grid-layout -name *.d.ts -o -name README*)",
+      "Bash(grep -r \"maxW\\\\|max-w\" --include=*.tsx --include=*.ts src/components/dashboard src/store)",
+      "Bash(npx tsc:*)",
+      "Bash(npm run:*)",
+      "Bash(/c/Program Files/nodejs/npx.cmd tsc --noEmit)",
+      "Bash(export PATH=\"/c/Program Files/nodejs:$PATH\")",
+      "Bash(npx -p typescript tsc --noEmit)",
+      "Bash(node node_modules/.bin/tsc --noEmit)"
+    ]
+  }
+}

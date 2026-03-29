@@ -21,6 +21,9 @@ type Config struct {
 	JWTVerifyAudience bool
 	JWKSCacheTTL      time.Duration
 
+	// Override the expected JWT issuer when external URL differs from internal
+	KeycloakIssuerOverride string
+
 	// BFF session-cookie auth
 	CookieAuthEnabled bool
 	SessionCookieName string
@@ -44,6 +47,8 @@ func Load() *Config {
 		KeycloakRealm:    getEnv("KEYCLOAK_REALM", "floodgate"),
 		KeycloakClientID: getEnv("KEYCLOAK_CLIENT_ID", "floodgate-waveform"),
 
+		KeycloakIssuerOverride: getEnv("KEYCLOAK_ISSUER_OVERRIDE", ""),
+
 		JWTVerifyAudience: parseBool(getEnv("JWT_VERIFY_AUDIENCE", "true")),
 		JWKSCacheTTL:      time.Duration(parseInt(getEnv("JWKS_CACHE_TTL_SECONDS", "300"))) * time.Second,
 
@@ -65,6 +70,9 @@ func (c *Config) JWKSUri() string {
 
 // KeycloakIssuer returns the expected JWT issuer claim value.
 func (c *Config) KeycloakIssuer() string {
+	if c.KeycloakIssuerOverride != "" {
+		return c.KeycloakIssuerOverride
+	}
 	return c.KeycloakURL + "/realms/" + c.KeycloakRealm
 }
 

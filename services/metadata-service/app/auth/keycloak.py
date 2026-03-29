@@ -100,10 +100,8 @@ class KeycloakTokenValidator:
         ttl = self._settings.jwks_cache_ttl
         if self._jwks_client is None or (now - self._jwks_last_refresh) > ttl:
             jwks_uri = await self._discover_jwks_uri()
-            # PyJWKClient handles HTTP internally; we pass lifespan=0 to disable
-            # its own caching so we control it here.
-            self._jwks_client = PyJWKClient(jwks_uri, lifespan=0)
-            # Force a fetch so the keys are populated
+            self._jwks_client = PyJWKClient(jwks_uri, lifespan=ttl)
+            # Force an initial fetch so the keys are populated immediately
             await _async_fetch_jwks(self._jwks_client)
             self._jwks_last_refresh = now
             log.debug("jwks.refreshed", uri=jwks_uri)
@@ -118,7 +116,13 @@ class KeycloakTokenValidator:
                 resp.raise_for_status()
                 self._openid_config = resp.json()
                 log.debug("oidc.discovered", issuer=self._openid_config.get("issuer"))
-        return str(self._openid_config["jwks_uri"])
+        # The JWKS URI from discovery may use the external hostname (e.g.
+        # localhost:8080) which is unreachable from inside the container.
+        # Convert to the internal URL for server-to-server fetching.
+        jwks_uri = str(self._openid_config["jwks_uri"])
+        external_base = self._settings.keycloak_external_url.rstrip("/")
+        internal_base = str(self._settings.keycloak_url).rstrip("/")
+        return jwks_uri.replace(external_base, internal_base)
 
     @staticmethod
     def _build_current_user(claims: TokenClaims) -> CurrentUser:

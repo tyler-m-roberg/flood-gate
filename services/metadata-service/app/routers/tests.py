@@ -7,9 +7,10 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from app.auth import CurrentUser, get_current_user
+from app.auth.dependencies import require_analyst
 from app.db.dependencies import get_repo
-from app.db.mock import MockMetadataRepository
-from app.models.domain import TestListOut, TestOut
+from app.db.protocol import MetadataRepository
+from app.models.domain import TestCreate, TestListOut, TestOut, TestUpdate
 
 router = APIRouter(prefix="/tests", tags=["tests"])
 
@@ -25,7 +26,7 @@ async def list_tests(
     ),
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=50, ge=1, le=500),
-    repo: MockMetadataRepository = Depends(get_repo),
+    repo: MetadataRepository = Depends(get_repo),
     _user: CurrentUser = Depends(get_current_user),
 ) -> TestListOut:
     """
@@ -48,7 +49,7 @@ async def list_tests(
 @router.get("/{test_id}", response_model=TestOut, summary="Get a test campaign")
 async def get_test(
     test_id: str,
-    repo: MockMetadataRepository = Depends(get_repo),
+    repo: MetadataRepository = Depends(get_repo),
     _user: CurrentUser = Depends(get_current_user),
 ) -> TestOut:
     """
@@ -60,3 +61,39 @@ async def get_test(
             status_code=status.HTTP_404_NOT_FOUND, detail=f"Test {test_id!r} not found"
         )
     return test
+
+
+@router.post(
+    "",
+    response_model=TestOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create a test campaign",
+)
+async def create_test(
+    body: TestCreate,
+    repo: MetadataRepository = Depends(get_repo),
+    _user: CurrentUser = Depends(require_analyst()),
+) -> TestOut:
+    """Create a new test campaign.  Requires analyst or admin role."""
+    return await repo.create_test(body)
+
+
+@router.put(
+    "/{test_id}",
+    response_model=TestOut,
+    summary="Update a test campaign",
+)
+async def update_test(
+    test_id: str,
+    body: TestUpdate,
+    repo: MetadataRepository = Depends(get_repo),
+    _user: CurrentUser = Depends(require_analyst()),
+) -> TestOut:
+    """Update test campaign metadata.  Requires analyst or admin role."""
+    result = await repo.update_test(test_id, body)
+    if result is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Test {test_id!r} not found",
+        )
+    return result

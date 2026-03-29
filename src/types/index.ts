@@ -53,7 +53,7 @@ export interface LoadedEvent {
   channels: Map<string, ChannelData>
 }
 
-export interface ActiveChannel {
+export interface WidgetChannel {
   key: string              // `${eventId}::${channelId}`
   eventId: string
   channelId: string
@@ -71,18 +71,17 @@ export interface Marker {
 
 // ── Widget Types ───────────────────────────────────────────────────────────────
 
-export type WidgetType = 'waveform' | 'stats' | 'comparative' | 'fft' | 'correlation'
+export type WidgetType = 'waveform' | 'stats' | 'fft' | 'correlation'
 
 export interface WidgetConfig {
   id: string
   type: WidgetType
   title: string
-  // waveform / comparative specific
-  channelKeys?: string[]    // which ActiveChannel keys to show
-  // stats specific
+  channels: WidgetChannel[]
   eventIds?: string[]
-  // layout
   poppedOut: boolean
+  locked?: boolean
+  multiYAxis?: boolean
 }
 
 export interface DashboardLayout {
@@ -92,6 +91,7 @@ export interface DashboardLayout {
   w: number
   h: number
   minW?: number
+  maxW?: number
   minH?: number
 }
 
@@ -106,6 +106,32 @@ export interface UserProfile {
   roles: Role[]
   groups: string[]
   avatarInitials: string
+}
+
+// ── Input Types (creation) ────────────────────────────────────────────────────
+
+export interface TestCreateInput {
+  name: string
+  description: string
+  facility: string
+  operator: string
+  tags: string[]
+}
+
+export interface EventCreateInput {
+  name: string
+  description?: string
+  trigger_condition?: string
+}
+
+export interface ChannelCreateInput {
+  id: string
+  name: string
+  unit: string
+  sensor_type: ChannelMeta['sensorType']
+  range_min: number
+  range_max: number
+  description?: string
 }
 
 // ── Computed Stats ─────────────────────────────────────────────────────────────

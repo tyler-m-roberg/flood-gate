@@ -22,6 +22,7 @@ The prototype stack:
 | Routing | React Router v7 |
 | Layout engine | react-grid-layout v2 |
 | Metadata service | FastAPI (Python 3.11) |
+| Metadata database | PostgreSQL 16 + Alembic migrations |
 | Waveform service | Go 1.23 |
 | Compute service | FastAPI (Python 3.11) + NumPy + SciPy |
 | Object storage | MinIO (S3-compatible) |
@@ -49,13 +50,25 @@ flood-gate/
 │   └── types/                    # All shared TypeScript interfaces (index.ts)
 ├── services/
 │   ├── metadata-service/         # FastAPI — tests, events, channel catalogue
+│   │   ├── alembic/              # Alembic migration environment
+│   │   │   ├── env.py            # Migration runner (swaps asyncpg→psycopg2)
+│   │   │   └── versions/         # Numbered migration scripts
+│   │   ├── alembic.ini           # Alembic configuration
 │   │   ├── app/
 │   │   │   ├── auth/             # Keycloak JWT validation, dependencies, models
 │   │   │   ├── config.py         # pydantic-settings
-│   │   │   ├── db/               # Repository pattern (mock + future SQL)
+│   │   │   ├── db/               # Repository pattern (protocol, mock, PostgreSQL)
+│   │   │   │   ├── protocol.py   # MetadataRepository Protocol (structural typing)
+│   │   │   │   ├── mock.py       # In-memory mock for USE_MOCK_DATA=true
+│   │   │   │   ├── models.py     # SQLAlchemy ORM models (tests, events, channels)
+│   │   │   │   ├── engine.py     # Async engine + session factory lifecycle
+│   │   │   │   ├── repository.py # PgMetadataRepository (async SQLAlchemy queries)
+│   │   │   │   └── dependencies.py # FastAPI Depends() — switches mock vs real
 │   │   │   ├── middleware/       # structlog request logging
 │   │   │   ├── models/           # Pydantic domain models + API schemas
-│   │   │   └── routers/          # /tests, /events, /channels
+│   │   │   ├── routers/          # /tests, /events, /channels
+│   │   │   ├── services/         # CSV parser for waveform upload
+│   │   │   └── storage/          # MinIO client for waveform upload
 │   │   ├── Dockerfile
 │   │   └── pyproject.toml
 │   ├── waveform-service/         # Go — serves waveform samples from MinIO
@@ -404,8 +417,35 @@ Run `ruff check` before committing Python changes.
 ### Repository pattern
 
 `app/db/` contains a repository interface. `MockMetadataRepository` in
-`app/db/mock.py` implements it for the prototype. A real async SQLAlchemy
-implementation drops in without touching routers or auth.
+`app/db/mock.py` implements it for the prototype. `PgMetadataRepository` in
+`app/db/repository.py` implements the same protocol with async SQLAlchemy.
+
+The protocol includes both read methods (list/get) and write methods
+(create_test, create_event, create_channels).
+
+### Data import
+
+The metadata service supports creating tests and uploading event data:
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/api/v1/tests` | Create a test campaign (JSON body) |
+| `POST` | `/api/v1/tests/{testId}/events` | Create an event with CSV waveform data (multipart) |
+
+**CSV upload format** — multipart form with two fields:
+- `event_meta`: JSON string of `UploadEventPayload` (event metadata + channel definitions)
+- `csv_file`: CSV file with header row `time,CH1,CH2,...` and float data rows
+
+The event creation endpoint:
+1. Creates channel metadata in PostgreSQL (idempotent)
+2. Creates event metadata in PostgreSQL
+3. Uploads each channel's waveform JSON to MinIO
+
+Both write endpoints require analyst or admin role.
+
+The metadata service connects to MinIO for waveform uploads when
+`USE_MOCK_DATA=false`. Config fields: `MINIO_ENDPOINT`, `MINIO_ACCESS_KEY`,
+`MINIO_SECRET_KEY`, `MINIO_BUCKET`, `MINIO_USE_TLS`.
 
 ---
 
@@ -474,6 +514,7 @@ ENV CGO_ENABLED=0 GONOSUMDB="*" GOFLAGS="-mod=mod"
 | Port | Service |
 |---|---|
 | 3000 | ui (nginx, host-mapped from 8080) |
+| 5432 | postgres (metadata database) |
 | 8001 | metadata-api (FastAPI) |
 | 8002 | waveform-api (Go) |
 | 8003 | compute-api (FastAPI + NumPy/SciPy) |
@@ -516,10 +557,18 @@ Next available port for a new service: **8004**.
 
 | Variable | Default | Description |
 |---|---|---|
-| `USE_MOCK_DATA` | `true` | Use in-memory mock repo |
-| `DATABASE_URL` | `sqlite+aiosqlite:///./floodgate_meta.db` | SQLAlchemy URL |
+| `USE_MOCK_DATA` | `false` | Use in-memory mock repo (skips DB) |
+| `DATABASE_URL` | `postgresql+asyncpg://…` | Async SQLAlchemy connection URL |
+| `DB_POOL_SIZE` | `5` | Async connection pool size |
+| `DB_MAX_OVERFLOW` | `10` | Max overflow connections beyond pool |
+| `DB_POOL_RECYCLE` | `300` | Seconds before recycling a connection |
 | `CORS_ORIGINS` | `http://localhost:5173` | Comma-separated allowed origins |
 | `UVICORN_WORKERS` | `2` | Worker process count |
+| `MINIO_ENDPOINT` | `localhost:9000` | MinIO host:port (waveform upload) |
+| `MINIO_ACCESS_KEY` | `minioadmin` | S3 access key |
+| `MINIO_SECRET_KEY` | `minioadmin` | S3 secret key |
+| `MINIO_BUCKET` | `floodgate-waveforms` | Waveform bucket |
+| `MINIO_USE_TLS` | `false` | Enable TLS for MinIO |
 
 ### Compute service
 

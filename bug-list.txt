@@ -1,0 +1,31 @@
+[FIXED] 1. Left side page has no padding. — Increased TopBar padding from px-4 to px-6
+[FIXED] 2. Right side page navigation bar with user cut off. No padding left side — Added shrink-0 and ml-3 to user menu container
+[FIXED] 3. No method to delete widgets from workspace. — Delete (X) button now always visible, not just on hover
+[FIXED] 4. Zoom methods and refresh do not work on plotting widget — Zoom in/out now work (2x zoom), reset view properly resets to full data range
+[FIXED] 5. Widgets do not allow to resize to full page width — Changed minW from 3 to 2, resize handles include east (e) for width expansion
+[FIXED] 6. Channels should be unique to widget not global. Channels should only be added and removed from currently selected widget. — Added per-widget channel selection via selectedWidgetId; clicking a widget selects it, channel toggles route to selected widget's channelKeys
+[FIXED] 7. Method to lock widget edits. — Added lock/unlock toggle in widget header; locked widgets disable drag, resize, edit, and delete
+[FIXED] 8. Method to deselect events. If exists it is not clear in UI how to perform. — Added "Clear" button next to selection count in action bar
+[FIXED] 9. Ability to open single event by double clicking vs open in workspace button — Added onDoubleClick handler on EventRow to open event directly in workspace
+[FIXED] 10. Button to refresh whole workspace — Added Refresh button in workspace toolbar, calls refreshWorkspace() which re-fetches all loaded events
+[FIXED] 11. Timed refresh with adjustable timer for workspace dashboard. — Added auto-refresh dropdown (Off, 5s, 10s, 30s, 60s) in workspace toolbar
+[FIXED] 12. Method to edit test metadata in test page. — Added PUT /api/v1/tests/{testId} endpoint, EditTestModal component, and edit button on test header
+[FIXED] 13. Channels may have different sample rates is this accounted for. — WaveformWidget now interpolates channels to a common time axis based on highest sample rate channel
+[FIXED] 14. In event table right side info pannel is too squished together and values are overlapping — Changed grid columns to use minmax() for proper sizing, reduced padding from pr-8 to pr-6
+[FIXED] 15. Open in workspace button on event page radius cuts off icon and end of e. Need to make larger or less radiused — Increased button padding to px-4 py-2 and changed to rounded-md
+[FIXED] 16. Event Table is too close to search bar and button row — Increased action bar margin from mb-4 to mb-6
+[FIXED] 17. Test information is too close to search bar — Increased header margin from mb-6 to mb-8
+[FIXED] 18. Not enough padding between elements on main page. Active Test header to close to cards and Archived test header too close to cards. — Increased section margin to mb-10, header-to-cards margin to mb-5
+[FIXED] 19. Test cards do not have enough padding on edges. — Increased test card padding from p-4 to p-5
+[FIXED] 20. Test event cards do not expand to page width. — Expanded container max-width from max-w-6xl to 1400px
+[FIXED] 21. Sign out button not functional. — Sign out was already wired to authStore.logout(); underlying auth issues (JWT validation, lifespan=0 crash) were fixed in previous session
+[FIXED] 22. Comparison plot type not needed anymore as general plot widget can plot waveforms from multiple events — Removed 'comparative' from WidgetType, deleted ComparativeWidget.tsx, removed from all menus
+[FIXED] 23. If opening events from multiple tests the test should also be prefixed to channel grouping. — ChannelPanel now groups events by test with test ID headers; channel badges show test prefix when multi-test
+[FIXED] 24. Events in channel selection panel should also be grouped by associated test and collapse by test as well. — Added collapsible test group headers in ChannelPanel when multiple tests are loaded
+[FIXED] 25. Ability to save dashboard configuration. — Added Save Layout / Load Layout buttons in workspace toolbar, persists to localStorage
+[FIXED] 26. Ability to create "realtime" dashboards that are scoped to a single test and show only most current event. — Added Analysis/Realtime mode toggle; realtime mode auto-polls for newest event and swaps loaded event on refresh timer
+[FIXED] 27. Replace webpage tab icon with waveform symbol that is on main page. — Replaced favicon.svg with Activity-style waveform icon
+[FIXED] 28. Error: Compute Service unavailable - start the full stack to enable fft analysis. This occurs when using fft spectrum widget. — Fixed auth validator lifespan=0 crash in compute service; compute client already defaults to relative URL through nginx proxy
+[FIXED] 29. Add widget tab does not have fft widget. — Added FFT Spectrum option with Waves icon to ChannelPanel footer widget list
+[FIXED] 30. Create Test does not work. UI works but test does not persist when reloaded and error test does not exist is encountered when trying to navigate to test. — workspaceStore.loadEvent now fetches from API when not found in mock data; TopBar uses API for test name lookup
+[FIXED] 31. Create event does not work. Event created in UI but when trying to navigate to open event in workspace it does says event does not exist. — workspaceStore.loadEvent fetches event metadata and channels from API; ChannelPanel uses event.meta.channels instead of CHANNELS_BY_TEST
