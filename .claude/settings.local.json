@@ -17,7 +17,13 @@
       "Bash(/c/Program Files/nodejs/npx.cmd tsc --noEmit)",
       "Bash(export PATH=\"/c/Program Files/nodejs:$PATH\")",
       "Bash(npx -p typescript tsc --noEmit)",
-      "Bash(node node_modules/.bin/tsc --noEmit)"
+      "Bash(node node_modules/.bin/tsc --noEmit)",
+      "Bash(python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\(json.dumps\\({k:v for k,v in {**d.get\\(''''dependencies'''',{}\\),**d.get\\(''''devDependencies'''',{}\\)}.items\\(\\)}, indent=2\\)\\)\")",
+      "Bash(python3:*)",
+      "Bash(node:*)",
+      "Bash(wslpath:*)",
+      "Bash(node_modules/.bin/tsc --noEmit)",
+      "Bash(./node_modules/.bin/tsc --noEmit)"
     ]
   }
 }

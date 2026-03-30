@@ -47,6 +47,9 @@ COPY --from=builder /opt/venv /opt/venv
 COPY alembic.ini ./
 COPY alembic/ ./alembic/
 
+# Copy shared FGW codec (from additional_contexts in docker-compose)
+COPY --from=shared fgw.py ./fgw.py
+
 # Copy application source (invalidates this layer on any source change, not deps)
 COPY app/ ./app/
 

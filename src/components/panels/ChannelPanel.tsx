@@ -313,6 +313,8 @@ function ColorSwatch({
   onColorChange?: (color: string) => void
 }) {
   const inputRef = useRef<HTMLInputElement>(null)
+  const [pendingColor, setPendingColor] = useState<string | null>(null)
+  const displayColor = pendingColor ?? color
   return (
     <div
       className={cn(
@@ -321,9 +323,9 @@ function ColorSwatch({
         onColorChange ? 'cursor-pointer hover:ring-1 hover:ring-[#58a6ff]' : ''
       )}
       style={{
-        backgroundColor: color + '22',
-        color,
-        border: `1px solid ${color}44`,
+        backgroundColor: displayColor + '22',
+        color: displayColor,
+        border: `1px solid ${displayColor}44`,
       }}
       onClick={e => {
         if (onColorChange) {
@@ -338,9 +340,13 @@ function ColorSwatch({
         <input
           ref={inputRef}
           type="color"
-          value={color}
+          value={displayColor}
           className="absolute inset-0 w-0 h-0 opacity-0 overflow-hidden pointer-events-none"
-          onChange={e => onColorChange(e.target.value)}
+          onChange={e => setPendingColor(e.target.value)}
+          onBlur={e => {
+            onColorChange(e.target.value)
+            setPendingColor(null)
+          }}
           onClick={e => e.stopPropagation()}
         />
       )}

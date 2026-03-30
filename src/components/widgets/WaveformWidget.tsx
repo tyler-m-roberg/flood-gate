@@ -234,8 +234,8 @@ export function WaveformWidget({ widgetId }: WaveformWidgetProps) {
 
   function resetZoom() {
     const u = plotRef.current
-    if (!u || !u.data[0] || u.data[0].length === 0) return
-    const times = u.data[0]
+    if (!u || !u.data[0] || (u.data[0] as Float64Array).length === 0) return
+    const times = u.data[0] as Float64Array
     u.setScale('x', { min: times[0], max: times[times.length - 1] })
   }
 

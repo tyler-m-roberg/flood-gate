@@ -39,6 +39,9 @@ WORKDIR /app
 # Copy pre-built venv from the installer stage (no build tools in runtime image)
 COPY --from=builder /opt/venv /opt/venv
 
+# Copy shared FGW codec (from additional_contexts in docker-compose)
+COPY --from=shared fgw.py ./fgw.py
+
 # Copy application source (invalidates only this layer on source changes)
 COPY app/ ./app/
 

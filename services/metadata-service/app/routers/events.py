@@ -175,19 +175,14 @@ async def create_event(
         client = get_minio_client()
         ch_unit_map = {ch.id: ch.unit for ch in payload.channels}
         for ch_id in parsed.channel_ids:
-            waveform_payload = {
-                "event_id": event_out.id,
-                "channel_id": ch_id,
-                "test_id": test_id,
-                "sample_rate": float(parsed.sample_rate),
-                "n_samples": parsed.n_samples,
-                "start_time": parsed.start_time,
-                "unit": ch_unit_map.get(ch_id, ""),
-                "values": [round(v, 6) for v in parsed.channel_values[ch_id]],
-            }
             upload_waveform(
                 client, settings.minio_bucket,
-                test_id, event_out.id, ch_id, waveform_payload,
+                test_id, event_out.id, ch_id,
+                sample_rate=float(parsed.sample_rate),
+                n_samples=parsed.n_samples,
+                start_time=parsed.start_time,
+                unit=ch_unit_map.get(ch_id, ""),
+                values=parsed.channel_values[ch_id],
             )
 
     log.info(

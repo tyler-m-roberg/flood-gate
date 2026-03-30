@@ -87,13 +87,13 @@ services:
       timeout: 5s
       start_period: 10s
       retries: 5
-    deploy:
-      resources:
-        limits:
-          cpus: "1.00"
-          memory: 256M
-        reservations:
-          memory: 128M
+    # deploy:
+    #   resources:
+    #     limits:
+    #       cpus: "1.00"
+    #       memory: 256M
+    #     reservations:
+    #       memory: 128M
 
   # ── React SPA ───────────────────────────────────────────────────────────────
   ui:
@@ -128,19 +128,21 @@ services:
       timeout: 5s
       start_period: 15s
       retries: 3
-    deploy:
-      resources:
-        limits:
-          cpus: "0.50"
-          memory: 64M
-        reservations:
-          memory: 32M
+    # deploy:
+    #   resources:
+    #     limits:
+    #       cpus: "0.50"
+    #       memory: 64M
+    #     reservations:
+    #       memory: 32M
 
   # ── FastAPI metadata service ─────────────────────────────────────────────────
   metadata-api:
     build:
       context: services/metadata-service
       dockerfile: Dockerfile
+      additional_contexts:
+        shared: services/shared
     image: floodgate-metadata:local
     ports:
       - "8001:8001"
@@ -195,13 +197,13 @@ services:
       timeout: 10s
       start_period: 20s
       retries: 3
-    deploy:
-      resources:
-        limits:
-          cpus: "1.00"
-          memory: 256M
-        reservations:
-          memory: 128M
+    # deploy:
+    #   resources:
+    #     limits:
+    #       cpus: "1.00"
+    #       memory: 256M
+    #     reservations:
+    #       memory: 128M
 
   # ── Go waveform service ───────────────────────────────────────────────────────
   waveform-api:
@@ -249,19 +251,21 @@ services:
       timeout: 5s
       start_period: 15s
       retries: 3
-    deploy:
-      resources:
-        limits:
-          cpus: "0.50"
-          memory: 128M
-        reservations:
-          memory: 64M
+    # deploy:
+    #   resources:
+    #     limits:
+    #       cpus: "0.50"
+    #       memory: 128M
+    #     reservations:
+    #       memory: 64M
 
   # ── FastAPI compute service ───────────────────────────────────────────────────
   compute-api:
     build:
       context: services/compute-service
       dockerfile: Dockerfile
+      additional_contexts:
+        shared: services/shared
     image: floodgate-compute:local
     ports:
       - "8003:8003"
@@ -310,13 +314,13 @@ services:
       timeout: 10s
       start_period: 30s
       retries: 3
-    deploy:
-      resources:
-        limits:
-          cpus: "2.00"
-          memory: 512M
-        reservations:
-          memory: 256M
+    # deploy:
+    #   resources:
+    #     limits:
+    #       cpus: "2.00"
+    #       memory: 512M
+    #     reservations:
+    #       memory: 256M
 
   # ── MinIO object storage ──────────────────────────────────────────────────────
   minio:
@@ -346,13 +350,13 @@ services:
       timeout: 5s
       start_period: 10s
       retries: 5
-    deploy:
-      resources:
-        limits:
-          cpus: "0.50"
-          memory: 256M
-        reservations:
-          memory: 128M
+    # deploy:
+    #   resources:
+    #     limits:
+    #       cpus: "0.50"
+    #       memory: 256M
+    #     reservations:
+    #       memory: 128M
 
   # ── Mock waveform data loader ────────────────────────────────────────────────
   # One-shot service: runs once to seed MinIO then exits.
@@ -362,6 +366,8 @@ services:
     build:
       context: scripts/load_mock_waveforms
       dockerfile: Dockerfile
+      additional_contexts:
+        shared: services/shared
     image: floodgate-mock-loader:local
     networks:
       - floodgate-net
@@ -422,13 +428,13 @@ services:
       timeout: 10s
       start_period: 180s # Increased to 3 minutes to account for low CPU/RAM limits
       retries: 5
-    deploy:
-      resources:
-        limits:
-          cpus: "1.00"
-          memory: 512M
-        reservations:
-          memory: 256M
+    # deploy:
+    #   resources:
+    #     limits:
+    #       cpus: "1.00"
+    #       memory: 512M
+    #     reservations:
+    #       memory: 256M
 
 # ── Networks ──────────────────────────────────────────────────────────────────
 networks:

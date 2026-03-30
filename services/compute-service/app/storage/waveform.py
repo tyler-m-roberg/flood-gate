@@ -1,8 +1,8 @@
 """
 MinIO waveform fetcher.
 
-Retrieves raw waveform JSON objects directly from the object store.
-Object key schema: {testId}/{eventId}/{channelId}.json
+Retrieves FGW binary waveform objects directly from the object store.
+Object key schema: {testId}/{eventId}/{channelId}.fgw
 
 The compute service reads waveforms from MinIO rather than calling the
 waveform-service, avoiding inter-service auth round-trips and keeping
@@ -12,7 +12,6 @@ signal processing throughput close to storage bandwidth.
 from __future__ import annotations
 
 import asyncio
-import json
 from dataclasses import dataclass
 
 import numpy as np
@@ -21,6 +20,7 @@ from minio import Minio
 from minio.error import S3Error
 
 from app.config import Settings
+from fgw import decode_fgw_header, decode_fgw_values_np
 
 log = structlog.get_logger(__name__)
 
@@ -61,7 +61,7 @@ async def fetch_waveform(
     settings: Settings,
 ) -> WaveformData:
     """
-    Fetch a single channel waveform from MinIO.
+    Fetch a single channel waveform from MinIO (FGW binary format).
 
     Runs the blocking MinIO SDK call in the default thread-pool executor so
     the async event loop is not blocked during I/O.
@@ -71,39 +71,42 @@ async def fetch_waveform(
     WaveformNotFoundError  — when the object does not exist in the bucket.
     S3Error                — for other storage-layer failures.
     """
-    key = f"{test_id}/{event_id}/{channel_id}.json"
+    key = f"{test_id}/{event_id}/{channel_id}.fgw"
     client = _make_client(settings)
 
-    def _blocking_fetch() -> dict:
+    def _blocking_fetch() -> bytes:
         try:
             response = client.get_object(settings.minio_bucket, key)
             raw = response.read()
             response.close()
             response.release_conn()
-            return json.loads(raw)
+            return raw
         except S3Error as exc:
             if exc.code in ("NoSuchKey", "NoSuchBucket"):
                 raise WaveformNotFoundError(key) from exc
             raise
 
     loop = asyncio.get_event_loop()
-    data = await loop.run_in_executor(None, _blocking_fetch)
+    raw = await loop.run_in_executor(None, _blocking_fetch)
+
+    header = decode_fgw_header(raw)
+    values = decode_fgw_values_np(raw, header)
 
     log.debug(
         "storage.waveform.fetched",
         test_id=test_id,
         event_id=event_id,
         channel_id=channel_id,
-        n_samples=data.get("n_samples"),
+        n_samples=header.n_samples,
     )
 
     return WaveformData(
-        event_id=data["event_id"],
-        channel_id=data["channel_id"],
-        test_id=data["test_id"],
-        sample_rate=float(data["sample_rate"]),
-        n_samples=int(data["n_samples"]),
-        start_time=float(data["start_time"]),
-        unit=str(data["unit"]),
-        values=np.array(data["values"], dtype=np.float64),
+        event_id=header.event_id,
+        channel_id=header.channel_id,
+        test_id=header.test_id,
+        sample_rate=header.sample_rate,
+        n_samples=header.n_samples,
+        start_time=header.start_time,
+        unit=header.unit,
+        values=values,
     )

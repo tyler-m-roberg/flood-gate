@@ -3,9 +3,9 @@
 FloodGate — mock waveform loader.
 
 Generates deterministic waveforms using the identical algorithm as
-src/data/mockData.ts and uploads them to MinIO as JSON objects.
+src/data/mockData.ts and uploads them to MinIO as FGW binary objects.
 
-Object key schema:  {testId}/{eventId}/{channelId}.json
+Object key schema:  {testId}/{eventId}/{channelId}.fgw
 
 Run:
     python main.py                          # default env vars
@@ -16,7 +16,6 @@ The script is idempotent: existing objects are skipped unless --force is passed.
 
 import argparse
 import io
-import json
 import math
 import os
 import sys
@@ -29,6 +28,9 @@ try:
 except ImportError:
     print("ERROR: minio package not installed. Run: pip install minio", file=sys.stderr)
     sys.exit(1)
+
+# ── Shared FGW codec (copied into container via Dockerfile) ───────────────────
+from fgw import encode_fgw  # noqa: E402
 
 # ── Configuration ──────────────────────────────────────────────────────────────
 MINIO_ENDPOINT  = os.getenv("MINIO_ENDPOINT",  "localhost:9000")
@@ -205,7 +207,7 @@ EVENT_COUNTS: dict[str, int] = {
 
 
 def iter_waveforms():
-    """Yield (key, payload_dict) for every event × channel combination."""
+    """Yield (key, fgw_bytes) for every event × channel combination."""
     for test_id, channels in TESTS_CHANNELS.items():
         count = EVENT_COUNTS[test_id]
         for ev_idx in range(count):
@@ -223,18 +225,18 @@ def iter_waveforms():
                 seed = compute_seed(event_id, ch["id"], ev_idx)
                 values = generate_waveform(N_SAMPLES, dt, profile, amplitude, noise_level, seed)
 
-                key = f"{test_id}/{event_id}/{ch['id']}.json"
-                payload = {
-                    "event_id":   event_id,
-                    "channel_id": ch["id"],
-                    "test_id":    test_id,
-                    "sample_rate": float(sample_rate),
-                    "n_samples":  N_SAMPLES,
-                    "start_time": 0.0,
-                    "unit":       ch["unit"],
-                    "values":     [round(v, 6) for v in values],
-                }
-                yield key, payload
+                key = f"{test_id}/{event_id}/{ch['id']}.fgw"
+                fgw_data = encode_fgw(
+                    event_id=event_id,
+                    channel_id=ch["id"],
+                    test_id=test_id,
+                    sample_rate=sample_rate,
+                    n_samples=N_SAMPLES,
+                    start_time=0.0,
+                    unit=ch["unit"],
+                    values=values,
+                )
+                yield key, fgw_data
 
 
 # ── MinIO helpers ──────────────────────────────────────────────────────────────
@@ -269,13 +271,12 @@ def object_exists(client: Minio, bucket: str, key: str) -> bool:
         return False
 
 
-def upload(client: Minio, bucket: str, key: str, payload: dict) -> None:
-    data = json.dumps(payload, separators=(",", ":")).encode()
+def upload(client: Minio, bucket: str, key: str, data: bytes) -> None:
     client.put_object(
         bucket, key,
         data=io.BytesIO(data),
         length=len(data),
-        content_type="application/json",
+        content_type="application/x-floodgate-waveform",
     )
 
 
@@ -299,12 +300,12 @@ def main() -> None:
 
     uploaded = skipped = errors = 0
 
-    for key, payload in iter_waveforms():
+    for key, fgw_data in iter_waveforms():
         if not args.force and object_exists(client, MINIO_BUCKET, key):
             skipped += 1
             continue
         try:
-            upload(client, MINIO_BUCKET, key, payload)
+            upload(client, MINIO_BUCKET, key, fgw_data)
             uploaded += 1
             print(f"  ✓ {key}")
         except Exception as exc:

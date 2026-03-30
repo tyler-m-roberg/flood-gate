@@ -7,12 +7,15 @@ Initialised once at startup via init_minio(); accessed via get_minio_client().
 from __future__ import annotations
 
 import io
-import json
+import sys
+from pathlib import Path
+from typing import Sequence
 
 import structlog
 from minio import Minio
 
 from app.config import Settings
+from fgw import encode_fgw
 
 log = structlog.get_logger(__name__)
 
@@ -48,16 +51,30 @@ def upload_waveform(
     test_id: str,
     event_id: str,
     channel_id: str,
-    payload: dict,
+    *,
+    sample_rate: float,
+    n_samples: int,
+    start_time: float,
+    unit: str,
+    values: Sequence[float],
 ) -> None:
-    """Upload a waveform JSON object to MinIO."""
-    key = f"{test_id}/{event_id}/{channel_id}.json"
-    data = json.dumps(payload, separators=(",", ":")).encode()
+    """Encode waveform as FGW binary and upload to MinIO."""
+    key = f"{test_id}/{event_id}/{channel_id}.fgw"
+    data = encode_fgw(
+        event_id=event_id,
+        channel_id=channel_id,
+        test_id=test_id,
+        sample_rate=sample_rate,
+        n_samples=n_samples,
+        start_time=start_time,
+        unit=unit,
+        values=values,
+    )
     client.put_object(
         bucket,
         key,
         data=io.BytesIO(data),
         length=len(data),
-        content_type="application/json",
+        content_type="application/x-floodgate-waveform",
     )
     log.info("minio.waveform_uploaded", key=key, size=len(data))
